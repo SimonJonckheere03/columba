@@ -4,3 +4,6 @@
 [submodule "external/libdivsufsort"]
 	path = external/libdivsufsort
 	url = https://github.com/y-256/libdivsufsort.git
+[submodule "external/moni-align"]
+	path = external/moni-align
+	url = git@github.com:SimonJonckheere03/moni-align.git

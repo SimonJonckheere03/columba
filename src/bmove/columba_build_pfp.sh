@@ -11,6 +11,9 @@ start_time=$(date +%s)
 columba_build_exe="./columba_build"
 big_bwt_exe="./../external/Big-BWT/bigbwt"
 
+# ! quick moni-align test
+moni_aling_exe="./../external/moni-align/build"
+
 # Default seed length
 seedLength=100
 
@@ -21,7 +24,12 @@ mod=0 # Default mod value (unset means 0)
 # Array to store fasta files
 fasta_files=()
 
+# Array to store vcf files 
+
 # Function to show usage
+
+# TODO vcf files path meegeven 
+
 showUsage() {
 	echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_files>] [-F <fasta_file_list>]"
 	echo
@@ -124,7 +132,17 @@ echo "Big-BWT window size: ${ws:-not set}"
 echo "Big-BWT mod value: ${mod:-not set}"
 echo "-------------------------------------------------------------"
 
+
+# TODO fix this :))
+
+echo "HALLO HALLO HALLO HALLO HALLO HALLO HALLO HALLO"
+
+runCommandWithTime "./moni build -r /mouse_reference_files/mouse.chr19.fa -v /mouse_reference_files/mouse.chr19.subset.vcf.gz -S /mouse_reference_files/mouse_samples.txt -H12 -o /mouse_index/mouse_index"
+
+
 # Start the preprocessing
+# ! fasta opendoen en n characters door seed vervangen en alles in lange file plakken + metadata 
+# ! herstructureren van data
 echo "Start preprocessing the fasta file(s) with Columba..."
 runCommandWithTime "$columba_build_exe" --preprocess -l "$seedLength" -r "$index_name" -f "${fasta_files[@]}"
 echo "Preprocessing done!"
@@ -141,6 +159,8 @@ if [ "$mod" -gt 0 ]; then
 	big_bwt_args+=(-p "$mod")
 fi
 
+
+
 # Start the prefix-free parsing
 echo "Start prefix-free parsing for the original string..."
 runCommandWithTime "${big_bwt_args[@]}"
@@ -156,6 +176,9 @@ if [ "$mod" -gt 0 ]; then
 	big_bwt_args+=(-p "$mod")
 fi
 
+
+# ! Hier heeft Moni-Align een custom version van gemaakt. Daar wordt het python script gebruikt als algemeen script (build, allign en nog iets dak efkes vergeet)
+# ! 
 echo "Start prefix-free parsing for the reverse string..."
 runCommandWithTime "${big_bwt_args[@]}"
 echo "Prefix-free parsing done!"

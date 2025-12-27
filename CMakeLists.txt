@@ -98,6 +98,8 @@ add_library(AuxiliaryClasses ${SOURCE_FILES})
 
 # ---- Update Git Submodules ----
 
+# TODO: add submodules for LevioSAM and Moni-Align here
+
 find_package(Git QUIET)
 message(STATUS "Checking and updating submodules...")
 execute_process(
@@ -283,6 +285,13 @@ else()
    
 
 endif()
+
+# TODO: figure out if this is a good place for dependency
+message(STATUS "Adding moni-align submodule build step...")
+set(MESSAGE_QUIT ON)
+add_subdirectory(external/moni-align)
+set(MESSAGE_QUIET OFF)
+
 
 # parallel-hashmap library
 message(STATUS "Fetching parallel-hashmap library")
