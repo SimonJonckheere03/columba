@@ -4,260 +4,212 @@
 # Description: This script performs the Columba build process for PFP.
 # Author: Lore Depuydt - lore.depuydt@ugent.be
 
-# -----------------------------------------------------------------------------
-# INITIALIZATION & DEFAULTS
-# -----------------------------------------------------------------------------
+# Capture start time
+start_time=$(date +%s)
 
-# Executable paths
+# We assume that this script is run from the build folder
 columba_build_exe="./columba_build"
 big_bwt_exe="./../external/Big-BWT/bigbwt"
-moni_align_exe="./../external/moni-align/build"
+
+# ! quick moni-align test
+moni_aling_exe="./../external/moni-align/build"
 
 # Default seed length
 seedLength=100
 
 # Optional Big-BWT parameters
-ws=0 
-mod=0
-
-# Moni-Align specific variables
-moni_ref=""
-moni_vcf=""
-moni_samples=""
-moni_output=""
+ws=0  # Default window size (unset means 0)
+mod=0 # Default mod value (unset means 0)
 
 # Array to store fasta files
 fasta_files=()
 
-# -----------------------------------------------------------------------------
-# FUNCTIONS
-# -----------------------------------------------------------------------------
+# Array to store vcf files 
+
+# Function to show usage
+
+# TODO vcf files path meegeven 
 
 showUsage() {
-    echo "Usage: $0 [options] -r <index_name>"
-    echo
-    echo "Required arguments (Columba):"
-    echo "  -r <index_name>      Name/location of the COLUMBA index to be created."
-    echo
-    echo "Optional arguments (Columba):"
-    echo "  -f <fasta_files>     Space-separated list of FASTA files."
-    echo "  -F <fasta_file_list> Path to a file containing a list of FASTA files."
-    echo "  -l <seedLength>      Seed length (default: $seedLength)."
-    echo "  -w <ws>              Big-BWT window size."
-    echo "  -p <mod>             Big-BWT mod value."
-    echo
-    echo "Moni-Align arguments (Required if running moni build):"
-    echo "  -m <ref_fasta>       Reference FASTA for moni-align (-r in moni)."
-    echo "  -v <vcf_file>        VCF file for moni-align (-v in moni)."
-    echo "  -s <samples_file>    Samples file for moni-align (-S in moni)."
-    echo "  -o <moni_out>        Output prefix for moni-align (-o in moni)."
+	echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_files>] [-F <fasta_file_list>]"
+	echo
+	echo "Required arguments:"
+	echo "  -r <index_name>   Name/location of the index to be created."
+	echo
+	echo "Optional arguments:"
+	echo "  -f <fasta_files>  Space-separated list of FASTA files."
+	echo "  -F <fasta_file_list>  Path to a file containing a list of FASTA files, one per line."
+	echo "  -l <seedLength>   Seed length for replacing non-ACGT characters (default: $seedLength). 0 means that no seed is used."
+	echo "  -w <ws>           Window size for Big-BWT. If unset, Big-BWT will use its default window size."
+	echo "  -p <mod>          Mod value for Big-BWT. If unset, Big-BWT will use its default mod value."
 }
 
+# Function to run a command with /usr/bin/time -v and extract time and memory usage
+# Usage: runCommandWithTime <command> [<args>...]
 runCommandWithTime() {
-    local command="$1"
-    shift
-    (/usr/bin/time -v "$command" "$@") || {
-        local status=$?
-        echo "Error: Command '$command $@' failed with exit status $status." >&2
-        exit $status
-    }
+	local command="$1"
+	shift
+	# Run the command and capture output, while measuring time and memory usage
+	(/usr/bin/time -v "$command" "$@") || {
+		local status=$?
+		echo "Error: Command '$command $@' failed with exit status $status." >&2
+		exit $status
+	}
 }
 
+# Function to parse command-line options
 parseOptions() {
-    # Added m, v, s, o to the getopts string
-    while getopts ":l:r:f:F:w:p:m:v:s:o:" opt; do
-        case $opt in
-            l) seedLength=$OPTARG ;;
-            r) index_name=$OPTARG ;;
-            w) ws=$OPTARG ;;
-            p) mod=$OPTARG ;;
-            m) moni_ref=$OPTARG ;;
-            v) moni_vcf=$OPTARG ;;
-            s) moni_samples=$OPTARG ;;
-            o) moni_output=$OPTARG ;;
-            f)
-                fasta_files+=("$OPTARG")
-                while [[ $OPTIND -le $# && ! ${!OPTIND} =~ ^- ]]; do
-                    fasta_files+=("${!OPTIND}")
-                    OPTIND=$((OPTIND + 1))
-                done
-                ;;
-            F)
-                if [[ -f $OPTARG ]]; then
-                    while IFS= read -r line; do fasta_files+=("$line"); done <"$OPTARG"
-                else
-                    echo "Error: File '$OPTARG' not found." >&2
-                    exit 1
-                fi
-                ;;
-            \?) echo "Invalid option: -$OPTARG" >&2; showUsage; exit 1 ;;
-            :)  echo "Option -$OPTARG requires an argument." >&2; showUsage; exit 1 ;;
-        esac
-    done
-    shift $((OPTIND - 1))
+	# Parse command-line options
+	while getopts ":l:r:f:F:w:p:" opt; do
+		case $opt in
+		l)
+			seedLength=$OPTARG
+			;;
+		r)
+			index_name=$OPTARG
+			;;
+		f)
+			# Collect all subsequent arguments as the list of FASTA files
+			fasta_files+=("$OPTARG")
+			while [[ $OPTIND -le $# && ! ${!OPTIND} =~ ^- ]]; do
+				fasta_files+=("${!OPTIND}")
+				OPTIND=$((OPTIND + 1))
+			done
+			;;
+		F)
+			# Read each line in the specified file and add it to the fasta_files array
+			if [[ -f $OPTARG ]]; then
+				while IFS= read -r line; do
+					fasta_files+=("$line")
+				done <"$OPTARG"
+			else
+				echo "Error: File '$OPTARG' not found." >&2
+				exit 1
+			fi
+			;;
+		w)
+			ws=$OPTARG
+			;;
+		p)
+			mod=$OPTARG
+			;;
+		\?)
+			echo "Invalid option: -$OPTARG" >&2
+			showUsage
+			exit 1
+			;;
+		:)
+			echo "Option -$OPTARG requires an argument." >&2
+			showUsage
+			exit 1
+			;;
+		esac
+	done
+	# Shift off the options and optional --
+	shift $((OPTIND - 1))
 
-    if [ -z "$index_name" ] || [ "${#fasta_files[@]}" -eq 0 ]; then
-        showUsage
-        exit 1
-    fi
+	# Ensure required arguments are provided
+	if [ -z "$index_name" ] || [ "${#fasta_files[@]}" -eq 0 ]; then
+		showUsage
+		exit 1
+	fi
 }
 
-# -----------------------------------------------------------------------------
-# PARSE OPTIONS (Moved Up)
-# -----------------------------------------------------------------------------
-# We parse options first to determine the index_name for the log folder path.
+# Main script logic
+
+# Parse command-line options
 parseOptions "$@"
-
-# -----------------------------------------------------------------------------
-# LOGGING SETUP (Updated)
-# -----------------------------------------------------------------------------
-# Capture start time
-start_time=$(date +%s)
-timestamp=$(date +"%Y%m%d_%H%M%S")
-
-# Determine directories based on -r index_name
-index_dir=$(dirname "$index_name")
-# If index_name has no path, default to current directory
-if [ -z "$index_dir" ] || [ "$index_dir" == "." ]; then
-    index_dir="."
-fi
-
-# Create a specific folder for this run inside the index folder
-log_run_dir="${index_dir}/logs/run_${timestamp}"
-mkdir -p "$log_run_dir"
-
-# Define the main log file inside that folder
-log_filename="${log_run_dir}/columba_build.log"
-
-echo "-------------------------------------------------------------"
-echo "Log file initiated: $log_filename"
-echo "All output will be saved to this file."
-echo "-------------------------------------------------------------"
-
-# Redirect stdout (1) and stderr (2) to the log file while still showing them on screen
-exec > >(tee -a "$log_filename") 2>&1
-
-# -----------------------------------------------------------------------------
-# MAIN SCRIPT LOGIC
-# -----------------------------------------------------------------------------
 
 echo "Welcome to the Columba build process with prefix-free parsing!"
 echo "-------------------------------------------------------------"
 echo "Index name: $index_name"
+echo "Input FASTA files:"
+for file in "${fasta_files[@]}"; do
+	echo "  $file"
+done
 echo "Seed length: $seedLength"
-echo "Logs for this run will be stored in: $log_run_dir"
-
-# Execute Moni-Align Build if parameters are provided
-# Optimized Moni-Align call
-if [ -n "$moni_ref" ] && [ -n "$moni_vcf" ]; then
-    echo "Running Moni-Align build..."
-    
-    # Build the command array dynamically
-    moni_cmd=("${moni_align_exe}/moni" build -r "$moni_ref" -v "$moni_vcf" -H12 -o "$moni_output")
-    
-    # Only add -S if the file is provided
-    if [ -n "$moni_samples" ]; then
-        moni_cmd+=(-S "$moni_samples")
-    fi
-
-    runCommandWithTime "${moni_cmd[@]}"
-else
-    echo "Skipping Moni-Align (missing -m or -v flags)."
-fi
-echo "Moni-Align index built!"
+echo "Big-BWT window size: ${ws:-not set}"
+echo "Big-BWT mod value: ${mod:-not set}"
 echo "-------------------------------------------------------------"
 
 
-# Preprocessing
+# TODO fix this :))
+
+echo "HALLO HALLO HALLO HALLO HALLO HALLO HALLO HALLO"
+
+runCommandWithTime "./moni build -r /mouse_reference_files/mouse.chr19.fa -v /mouse_reference_files/mouse.chr19.subset.vcf.gz -S /mouse_reference_files/mouse_samples.txt -H12 -o /mouse_index/mouse_index"
+
+
+# Start the preprocessing
+# ! fasta opendoen en n characters door seed vervangen en alles in lange file plakken + metadata 
+# ! herstructureren van data
 echo "Start preprocessing the fasta file(s) with Columba..."
 runCommandWithTime "$columba_build_exe" --preprocess -l "$seedLength" -r "$index_name" -f "${fasta_files[@]}"
 echo "Preprocessing done!"
 echo "-------------------------------------------------------------"
 
-# Big-BWT Setup
 base="${index_name}"
-big_bwt_args=("$big_bwt_exe" -e -s -v "$base")
-[ "$ws" -gt 0 ] && big_bwt_args+=(-w "$ws")
-[ "$mod" -gt 0 ] && big_bwt_args+=(-p "$mod")
 
-# Prefix-Free Parsing (Original)
+# Build Big-BWT command with optional -w and -p arguments
+big_bwt_args=("$big_bwt_exe" -e -s -v "$base")
+if [ "$ws" -gt 0 ]; then
+	big_bwt_args+=(-w "$ws")
+fi
+if [ "$mod" -gt 0 ]; then
+	big_bwt_args+=(-p "$mod")
+fi
+
+
+
+# Start the prefix-free parsing
 echo "Start prefix-free parsing for the original string..."
 runCommandWithTime "${big_bwt_args[@]}"
 echo "Prefix-free parsing done!"
 echo "-------------------------------------------------------------"
 
-
-# Prefix-Free Parsing (Reverse)
+# Adjust the arguments for the reverse string
 big_bwt_args=("$big_bwt_exe" -e -s -v "${base}.rev")
-[ "$ws" -gt 0 ] && big_bwt_args+=(-w "$ws")
-[ "$mod" -gt 0 ] && big_bwt_args+=(-p "$mod")
+if [ "$ws" -gt 0 ]; then
+	big_bwt_args+=(-w "$ws")
+fi
+if [ "$mod" -gt 0 ]; then
+	big_bwt_args+=(-p "$mod")
+fi
 
+
+# ! Hier heeft Moni-Align een custom version van gemaakt. Daar wordt het python script gebruikt als algemeen script (build, allign en nog iets dak efkes vergeet)
+# ! 
 echo "Start prefix-free parsing for the reverse string..."
 runCommandWithTime "${big_bwt_args[@]}"
-echo "Prefix-free parsing done (reverse)!"
+echo "Prefix-free parsing done!"
 echo "-------------------------------------------------------------"
 
-# Final Columba Index
+# Start building the Columba index
 echo "Start building the Columba index..."
 runCommandWithTime "$columba_build_exe" --pfp -r "$index_name"
 echo "Columba index built!"
 echo "-------------------------------------------------------------"
 
-# -----------------------------------------------------------------------------
-# LOG MANAGEMENT (Subprocess Cleanup)
-# -----------------------------------------------------------------------------
-echo "Moving subprocess logs to run directory..."
-
-# Function to safely move files if they exist
-safe_move_log() {
-    local src="$1"
-    local dest_dir="$2"
-    if [ -f "$src" ]; then
-        mv "$src" "$dest_dir"
-        echo "Moved log: $src -> $dest_dir"
-    else
-        echo "Log not found (skipping): $src"
-    fi
-}
-
-# 1. Move Big-BWT Logs (Original and Reverse)
-# These are typically created at ${base}.log and ${base}.rev.log
-safe_move_log "${base}.log" "$log_run_dir"
-safe_move_log "${base}.rev.log" "$log_run_dir"
-
-# 2. Move Moni-Align Logs
-# Moni usually generates logs based on the output prefix if applicable
-if [ -n "$moni_output" ]; then
-    # Attempt to move the standard log file if moni produces one ending in .log
-    safe_move_log "${moni_output}.log" "$log_run_dir"
-    
-    # If moni produces other log-like files starting with the prefix, try moving those too
-    # Using a loop with nullglob to avoid errors if no files match
-    shopt -s nullglob
-    for logfile in "${moni_output}"*.log; do
-        # Check to ensure we aren't moving the file we just moved
-        if [ -f "$logfile" ]; then
-             mv "$logfile" "$log_run_dir/"
-             echo "Moved moni log: $logfile -> $log_run_dir"
-        fi
-    done
-    shopt -u nullglob
-fi
-
-echo "Log reorganization complete."
+# Remove the temporary files
+echo "Remove temporary files..."
+rm "${base}.bwt"
+rm "${base}.rev.bwt"
+rm "${base}.ssa"
+rm "${base}.rev.ssa"
+rm "${base}.esa"
+rm "${base}.rev.esa"
+rm "${base}.log"
+rm "${base}.rev.log"
+rm "${base}"
+rm "${base}.rev"
+echo "Temporary files removed!"
 echo "-------------------------------------------------------------"
 
-
-# Cleanup
-echo "Remove temporary files..."
-
-# NOTE: "${base}.log" and "${base}.rev.log" were moved above, so they are safe.
-rm -f "${base}.bwt" "${base}.rev.bwt" "${base}.ssa" "${base}.rev.ssa" \
-      "${base}.esa" "${base}.rev.esa" \
-      "${base}" "${base}.rev"
-      
-echo "Temporary files removed!" 
-
+# Capture end time
 end_time=$(date +%s)
-echo "Total time elapsed: $((end_time - start_time)) seconds."
-echo "Script log saved to: $log_filename"
+
+# Calculate total elapsed time
+total_time=$((end_time - start_time))
+
+echo "The Columba build process with prefix-free parsing is finished!"
+echo "Total time elapsed: $total_time seconds."

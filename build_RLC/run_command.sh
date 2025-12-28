@@ -1,4 +1,4 @@
-./columba_build_pfp.sh   \
+./columba_moni_build_pfp.sh   \
 -r simon_chrom19_index/columba_index   \
 -f simon_chrom19_references/GRCh38.primary_assembly.genome.chr19.fa.gz   \
 -m simon_chrom19_references/GRCh38.primary_assembly.genome.chr19.fa.gz   \

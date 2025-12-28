@@ -1,3 +1,6 @@
+#build_RLC
+# these are usefull just for checking the 
+# created files from the build when build_RLC is not ignored
 build_RLC/_deps
 build_RLC/CMakeFiles
 build_RLC/external
@@ -15,6 +18,9 @@ build_RLC/CMakeCache.txt
 build_RLC/cmake_install.cmake
 build_RLC/libAuxiliaryClasses.so
 build_RLC/libAuxiliaryClasses.a
-
+build_RLC/lib
+build_RLC/bin
+build_RLC/simon_chrom19_index/
+build_RLC_32/
 build_Vanilla/
 external/
