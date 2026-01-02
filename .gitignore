@@ -1,26 +1,8 @@
-#build_RLC
-# these are usefull just for checking the 
-# created files from the build when build_RLC is not ignored
-build_RLC/_deps
-build_RLC/CMakeFiles
-build_RLC/external
-build_RLC/read_files
-build_RLC/reference_files
-build_RLC/mouse_index
-build_RLC/mouse_reference_files
-build_RLC/simon_chrom19_references
-build_RLC/columba
-build_RLC/columba_build
-build_RLC/CPackConfig.cmake
-build_RLC/CPackSourceConfig.cmake
-build_RLC/Makefile
-build_RLC/CMakeCache.txt
-build_RLC/cmake_install.cmake
-build_RLC/libAuxiliaryClasses.so
-build_RLC/libAuxiliaryClasses.a
-build_RLC/lib
-build_RLC/bin
-build_RLC/simon_chrom19_index/
-build_RLC_32/
-build_Vanilla/
+
+mouse_reference_files/
+read_files/
+reference_files/
+build_RLC/
 external/
+simon_chrom19_references
+simon_reads

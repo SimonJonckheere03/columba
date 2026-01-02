@@ -288,10 +288,46 @@ endif()
 
 # TODO: figure out if this is a good place for dependency
 message(STATUS "Adding moni-align submodule build step...")
-set(MESSAGE_QUIT ON)
-add_subdirectory(external/moni-align)
-set(MESSAGE_QUIET OFF)
 
+include(ExternalProject)
+
+# 1. Define where moni-align installs internally
+set(MONI_INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/moni_install)
+
+# 2. Define where we want the final executables to go
+# If CMAKE_RUNTIME_OUTPUT_DIRECTORY is not set (common), default to the build root folder
+if(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(FINAL_BIN_DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+else()
+    set(FINAL_BIN_DESTINATION ${CMAKE_BINARY_DIR})
+endif()
+
+ExternalProject_Add(moni_align_project
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/moni-align
+    
+    # Pass arguments to the moni-align CMake
+    CMAKE_ARGS 
+        -DCMAKE_INSTALL_PREFIX=${MONI_INSTALL_PREFIX}
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+
+    UPDATE_COMMAND ""
+    BUILD_ALWAYS 1
+    INSTALL_DIR ${MONI_INSTALL_PREFIX}
+)
+
+# 3. Copy the executables safely
+add_custom_command(
+    TARGET moni_align_project POST_BUILD
+    # Ensure the destination directory exists first
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FINAL_BIN_DESTINATION}"
+    # Copy the contents of moni_install/bin to our final destination
+    COMMAND ${CMAKE_COMMAND} -E copy_directory 
+            "${MONI_INSTALL_PREFIX}/bin" 
+            "${FINAL_BIN_DESTINATION}"
+    COMMENT "Copying moni-align executables to ${FINAL_BIN_DESTINATION}"
+)
 
 # parallel-hashmap library
 message(STATUS "Fetching parallel-hashmap library")
