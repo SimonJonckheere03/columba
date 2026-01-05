@@ -149,8 +149,13 @@ echo "Logs for this run will be stored in: $log_run_dir"
 
 # Execute Moni-Align Build if parameters are provided
 # Optimized Moni-Align call
-if [ -n "$moni_ref" ] && [ -n "$moni_vcf" ]; then
-    echo "Running Moni-Align build..."
+
+# 1. No spaces around '='. Use a string like "true" or "false".
+vcf_true="false"
+
+# 2. Add spaces inside [ ... ] and use "$" to reference the variable.
+if [ -n "$moni_ref" ] && [ -n "$moni_vcf" ] && [ "$vcf_true" = "true" ]; then
+    echo "Running Moni-Align build (VCF mode)..."
     
     # Build the command array dynamically
     moni_cmd=("${moni_align_exe}/moni" build -r "$moni_ref" -v "$moni_vcf" -H12 -o "$moni_output")
@@ -161,12 +166,21 @@ if [ -n "$moni_ref" ] && [ -n "$moni_vcf" ]; then
     fi
 
     runCommandWithTime "${moni_cmd[@]}"
+
+# 3. Use 'elif' or separate 'if' to handle the FALSE case. 
+# Explicitly checking if it is NOT true.
+elif [ "$vcf_true" = "false" ]; then
+    echo "Running Moni-Align build (FASTA only)..."
+    moni_cmd=("${moni_align_exe}/moni" build -f "$moni_ref" -o "$moni_output")
+
+    runCommandWithTime "${moni_cmd[@]}"
+
 else
-    echo "Skipping Moni-Align (missing -m or -v flags)."
+    echo "Skipping Moni-Align (missing flags or invalid toggle)."
 fi
+
 echo "Moni-Align index built!"
 echo "-------------------------------------------------------------"
-
 
 # Preprocessing
 echo "Start preprocessing the fasta file(s) with Columba..."

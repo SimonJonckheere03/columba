@@ -4,5 +4,6 @@ read_files/
 reference_files/
 build_RLC/
 external/
-simon_chrom19_references
-simon_reads
+simon_chrom19_references/
+simon_reads/
+data/
