@@ -473,7 +473,99 @@ if(RUN_LENGTH_COMPRESSION)
     endif()
 endif()
 
+# ---- LevioSAM ----
+# NOTE: This block must be placed AFTER the SDSL configuration block 
+# so that SDSL_INCLUDE_DIR and SDSL_LIBRARY are defined.
+
+message(STATUS "Adding levioSAM build step...")
+
+# 1. Find HTSlib (Required for LevioSAM)
+# We try PkgConfig first, then manual search.
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(HTSLIB QUIET htslib)
+endif()
+
+set(LEVIOSAM_HTS_ARGS "")
+if(HTSLIB_FOUND)
+    message(STATUS "Found HTSlib via PkgConfig: ${HTSLIB_LIBDIR}")
+    list(APPEND LEVIOSAM_HTS_ARGS "-DHTS_LIB_DIR=${HTSLIB_LIBDIR}")
+    list(APPEND LEVIOSAM_HTS_ARGS "-DHTS_INC_DIR=${HTSLIB_INCLUDEDIR}")
+else()
+    # Fallback: Attempt to find manually if PkgConfig failed
+    find_library(HTS_LIB NAMES hts)
+    find_path(HTS_INC NAMES htslib/sam.h)
+    if(HTS_LIB AND HTS_INC)
+         get_filename_component(HTS_LIB_DIR_PATH ${HTS_LIB} DIRECTORY)
+         message(STATUS "Found HTSlib manually: ${HTS_LIB_DIR_PATH}")
+         list(APPEND LEVIOSAM_HTS_ARGS "-DHTS_LIB_DIR=${HTS_LIB_DIR_PATH}")
+         list(APPEND LEVIOSAM_HTS_ARGS "-DHTS_INC_DIR=${HTS_INC}")
+    else()
+         message(WARNING "HTSlib not found. LevioSAM build will likely fail if HTSlib is not in standard system paths.")
+    endif()
+endif()
+
+# 2. Configure SDSL Paths for LevioSAM
+# LevioSAM needs explicit paths if SDSL is not in a standard system location.
+set(LEVIOSAM_SDSL_ARGS "")
+
+# Check if we are using the locally built SDSL (sdsl-lite_ext) or a system one
+if(TARGET sdsl-lite_ext)
+    # Using the local ExternalProject build
+    # SDSL_INSTALL_DIR was defined in your SDSL block above
+    list(APPEND LEVIOSAM_SDSL_ARGS "-DSDSL_LIB_DIR=${SDSL_INSTALL_DIR}/lib")
+    list(APPEND LEVIOSAM_SDSL_ARGS "-DSDSL_INC_DIR=${SDSL_INSTALL_DIR}/include")
+elseif(SDSL_FOUND OR EXISTS "${SDSL_LIBRARY}")
+    # Using System SDSL found via find_package
+    get_filename_component(SDSL_LIB_DIR_PATH ${SDSL_LIBRARY} DIRECTORY)
+    list(APPEND LEVIOSAM_SDSL_ARGS "-DSDSL_LIB_DIR=${SDSL_LIB_DIR_PATH}")
+    list(APPEND LEVIOSAM_SDSL_ARGS "-DSDSL_INC_DIR=${SDSL_INCLUDE_DIR}")
+endif()
+
+# 3. Define LevioSAM External Project
+set(LEVIOSAM_INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/leviosam_install)
+
+ExternalProject_Add(leviosam_project
+    # Use GIT_REPOSITORY to fetch it automatically, or change to SOURCE_DIR if using submodules
+    GIT_REPOSITORY https://github.com/alshai/levioSAM.git
+    GIT_TAG master 
+    
+    CMAKE_ARGS 
+        -DCMAKE_INSTALL_PREFIX=${LEVIOSAM_INSTALL_PREFIX}
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        ${LEVIOSAM_HTS_ARGS}
+        ${LEVIOSAM_SDSL_ARGS}
+
+    UPDATE_COMMAND ""
+    BUILD_ALWAYS 1
+    INSTALL_DIR ${LEVIOSAM_INSTALL_PREFIX}
+)
+
+# If we are building SDSL locally, LevioSAM must wait for it to finish
+if(TARGET sdsl-lite_ext)
+    add_dependencies(leviosam_project sdsl-lite_ext)
+endif()
+
+# 4. Copy executables to final bin (Same logic as moni-align)
+# Ensure FINAL_BIN_DESTINATION is set (it usually is by the moni-align block, or defaults to build dir)
+if(NOT FINAL_BIN_DESTINATION)
+    set(FINAL_BIN_DESTINATION ${CMAKE_BINARY_DIR})
+endif()
+
+add_custom_command(
+    TARGET leviosam_project POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FINAL_BIN_DESTINATION}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory 
+            "${LEVIOSAM_INSTALL_PREFIX}/bin" 
+            "${FINAL_BIN_DESTINATION}"
+    COMMENT "Copying levioSAM executables to ${FINAL_BIN_DESTINATION}"
+)
+
 # ---- Installation ----
 
 # Install targets to the bin directory
 install(TARGETS columba columba_build DESTINATION bin)
+
+

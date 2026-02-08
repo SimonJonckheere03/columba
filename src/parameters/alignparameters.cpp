@@ -1379,8 +1379,8 @@ Parameters::createStrategy(IndexInterface& index) const {
     strategy->setDiscordantAllowed(discordantAllowed);
     strategy->setNumDiscordantAllowed(nDiscordant);
     strategy->setUnmappedSam(!noUnmappedRecord);
-    strategy->setXATag(XATag);
     strategy->setSamOutput(outputIsSAM);
+    strategy->setXATag(XATag);
     strategy->setStrataAfterBest(strataAfterBest);
 
     return strategy;
