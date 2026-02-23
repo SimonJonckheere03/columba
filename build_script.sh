@@ -53,7 +53,7 @@ else
 	option_rlc+="OFF"
 fi
 
-cmake_command="cmake .. $option_rlc"
+cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=Debug  -DHTSLIB_ROOT=/home/students/simjonck/htslib_install"
 
 # Add bit-width if provided
 if [ -n "$BIT_WIDTH" ]; then

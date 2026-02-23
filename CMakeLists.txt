@@ -428,7 +428,114 @@ if(RUN_LENGTH_COMPRESSION)
     endif()
 endif()
 
+
+include(ExternalProject)
+
+# ------------------------------------------------------------------------------
+# 1. HTSlib (Pre-built Local Version)
+# ------------------------------------------------------------------------------
+
+# You must pass the path to your HTSlib install folder when running CMake:
+# cmake .. -DHTSLIB_ROOT=/home/students/simjonck/path/to/htslib_install
+
+if(NOT DEFINED HTSLIB_ROOT)
+    message(FATAL_ERROR "HTSLIB_ROOT is not defined. Please run cmake with -DHTSLIB_ROOT=<path_to_your_htslib_folder>")
+endif()
+
+# Normalize the path to avoid issues
+get_filename_component(HTSLIB_ROOT "${HTSLIB_ROOT}" ABSOLUTE)
+
+message(STATUS "Using local HTSlib at: ${HTSLIB_ROOT}")
+
+# Define where the library and headers are expected to be
+# (Assumes you ran 'make install' to a prefix, or organized it as lib/ and include/)
+set(MY_HTS_LIB "${HTSLIB_ROOT}/lib/libhts.a")
+set(MY_HTS_INC "${HTSLIB_ROOT}/include")
+
+# Verify the static library exists to prevent confusing build errors later
+if(NOT EXISTS "${MY_HTS_LIB}")
+    # Fallback: Check if the user pointed to the source directory where they ran 'make' but not 'make install'
+    if(EXISTS "${HTSLIB_ROOT}/libhts.a")
+        set(MY_HTS_LIB "${HTSLIB_ROOT}/libhts.a")
+        set(MY_HTS_INC "${HTSLIB_ROOT}") # Headers are usually in root in source builds
+        message(STATUS "Found libhts.a in root of HTSLIB_ROOT (Source build detected)")
+    else()
+        message(FATAL_ERROR "Could not find libhts.a at ${MY_HTS_LIB}. \nPlease ensure HTSLIB_ROOT points to a valid installation (containing lib/libhts.a) or build directory.")
+    endif()
+endif()
+
+# ------------------------------------------------------------------------------
+# 2. LevioSAM - Build as ExternalProject
+# ------------------------------------------------------------------------------
+
+set(LEVIOSAM_DEPS "")
+
+# --- Determine absolute path to SDSL (System or Local) ---
+if(TARGET sdsl-lite_ext)
+    list(APPEND LEVIOSAM_DEPS sdsl-lite_ext)
+    set(MY_SDSL_LIB "${SDSL_INSTALL_DIR}/lib/libsdsl.a")
+    set(MY_SDSL_INC "${SDSL_INSTALL_DIR}/include")
+else()
+    set(MY_SDSL_LIB "${SDSL_LIBRARY}")
+    set(MY_SDSL_INC "${SDSL_INCLUDE_DIR}")
+endif()
+
+# --- Extract Directories for Hints ---
+get_filename_component(MY_SDSL_LIB_DIR "${MY_SDSL_LIB}" DIRECTORY)
+get_filename_component(MY_HTS_LIB_DIR "${MY_HTS_LIB}" DIRECTORY)
+
+message(STATUS "LevioSAM will use SDSL library: ${MY_SDSL_LIB}")
+message(STATUS "LevioSAM will use SDSL includes: ${MY_SDSL_INC}")
+message(STATUS "LevioSAM will use HTSlib library: ${MY_HTS_LIB}")
+message(STATUS "LevioSAM will use HTSlib includes: ${MY_HTS_INC}")
+
+# --- Build LevioSAM ---
+ExternalProject_Add(leviosam_proj
+    GIT_REPOSITORY https://github.com/alshai/levioSAM.git
+    GIT_TAG master
+    PREFIX "${CMAKE_BINARY_DIR}/external/leviosam_wrapper"
+    
+    DEPENDS ${LEVIOSAM_DEPS}
+
+    LIST_SEPARATOR "|"
+    
+    # Patch the CMakeLists.txt to remove googletest
+    PATCH_COMMAND sed -i "/configure_file(CMakeLists.txt.in/,/INSTALL(FILES src\\/leviosam.hpp DESTINATION include)/d" <SOURCE_DIR>/CMakeLists.txt
+          COMMAND sed -i "$ a\\INSTALL(TARGETS leviosam DESTINATION bin)\\nINSTALL(FILES src/leviosam.hpp DESTINATION include)" <SOURCE_DIR>/CMakeLists.txt
+    
+    CMAKE_ARGS 
+        -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/external/leviosam_install
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_BUILD_TYPE=Release
+        "-DCMAKE_LIBRARY_PATH=${MY_SDSL_LIB_DIR}|${MY_HTS_LIB_DIR}"
+        "-DCMAKE_INCLUDE_PATH=${MY_SDSL_INC}|${MY_HTS_INC}"
+        -DSDSL_LIBRARY=${MY_SDSL_LIB}
+        -DSDSL_INCLUDE_DIR=${MY_SDSL_INC}
+        -DHTSLIB_LIBRARY=${MY_HTS_LIB}
+        -DHTSLIB_INCLUDE_DIR=${MY_HTS_INC}
+    
+    INSTALL_COMMAND make install
+)
+
+# ------------------------------------------------------------------------------
+# 3. Copy Executable
+# ------------------------------------------------------------------------------
+ExternalProject_Add_Step(leviosam_proj copy_binary
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_BINARY_DIR}/external/leviosam_install/bin/leviosam"
+        "${CMAKE_BINARY_DIR}/bin/leviosam"
+    DEPENDEES install
+    COMMENT "Copying leviosam executable to project bin directory"
+)
 # ---- Installation ----
 
 # Install targets to the bin directory
 install(TARGETS columba columba_build DESTINATION bin)
+
+# Install leviosam executable if it exists
+if(TARGET leviosam_main_executable) # Check the exact target name in LevioSAM's CMake
+    install(TARGETS leviosam_main_executable DESTINATION bin)
+elseif(TARGET leviosam) 
+    # Sometimes the executable target is just 'leviosam'
+    install(TARGETS leviosam DESTINATION bin)
+endif()
