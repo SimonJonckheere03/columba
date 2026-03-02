@@ -7,3 +7,6 @@
 [submodule "external/leviosam"]
 	path = external/leviosam
 	url = https://github.com/alshai/LevioSAM
+[submodule "external/pfp"]
+	path = external/pfp
+	url = https://github.com/SimonJonckheere03/pfp.git
