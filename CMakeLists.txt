@@ -527,6 +527,93 @@ ExternalProject_Add_Step(leviosam_proj copy_binary
     DEPENDEES install
     COMMENT "Copying leviosam executable to project bin directory"
 )
+
+# ------------------------------------------------------------------------------
+# 4. pfp (Prefix-Free Parsing) - Build as ExternalProject from submodule
+# ------------------------------------------------------------------------------
+
+# pfp is a git submodule at external/pfp.
+# It requires htslib (already resolved above as MY_HTS_LIB / MY_HTS_INC).
+# Our htslib was built WITHOUT bz2 and lzma support, so we must suppress
+# CMake's find_package for BZip2 and LibLZMA inside pfp's build to avoid
+# the linker pulling in -lbz2 / -llzma that libhts.a doesn't carry.
+
+set(PFP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/pfp")
+set(PFP_BINARY_DIR "${CMAKE_BINARY_DIR}/external/pfp_build")
+set(PFP_INSTALL_DIR "${CMAKE_BINARY_DIR}/external/pfp_install")
+
+# Verify submodule was checked out
+if(NOT EXISTS "${PFP_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "pfp submodule not found at ${PFP_SOURCE_DIR}. "
+        "Please run: git submodule update --init --recursive")
+endif()
+
+# Collect any additional dependencies pfp must wait on
+set(PFP_DEPS "")
+if(TARGET sdsl-lite_ext)
+    list(APPEND PFP_DEPS sdsl-lite_ext)
+endif()
+
+# Extract the directory parts so we can pass CMAKE_LIBRARY_PATH / CMAKE_INCLUDE_PATH
+get_filename_component(MY_HTS_LIB_DIR "${MY_HTS_LIB}" DIRECTORY)
+
+ExternalProject_Add(pfp_proj
+    SOURCE_DIR "${PFP_SOURCE_DIR}"
+    PREFIX     "${CMAKE_BINARY_DIR}/external/pfp_wrapper"
+    BINARY_DIR "${PFP_BINARY_DIR}"
+    DEPENDS ${PFP_DEPS}
+    LIST_SEPARATOR "|"
+
+    PATCH_COMMAND sed -i "/libfind_package(HTSlib BZip2)/d" <SOURCE_DIR>/cmake/FindHTSlib.cmake
+          COMMAND sed -i "/libfind_package(HTSlib LibLZMA)/d" <SOURCE_DIR>/cmake/FindHTSlib.cmake
+          
+          # 2. NEW: Inject libdeflate into pfp's base library dependencies
+          COMMAND sed -i "s|ssl crypto|ssl crypto /usr/lib/x86_64-linux-gnu/libdeflate.so|g" <SOURCE_DIR>/CMakeLists.txt
+          COMMAND sed -i "s|dl pthread)$|dl pthread /usr/lib/x86_64-linux-gnu/libdeflate.so)|g" <SOURCE_DIR>/CMakeLists.txt
+
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=${PFP_INSTALL_DIR}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_BUILD_TYPE=Release
+        
+        # 2. Mirror LevioSAM's successful path hints
+        "-DCMAKE_LIBRARY_PATH=${MY_HTS_LIB_DIR}"
+        "-DCMAKE_INCLUDE_PATH=${MY_HTS_INC}|${MY_HTS_INC}/htslib"
+        
+        # 3. Pass both naming conventions to ensure pfp's FindHTSlib.cmake is satisfied
+        -DHTSLIB_LIBRARY=${MY_HTS_LIB}
+        -DHTSLIB_INCLUDE_DIR=${MY_HTS_INC}
+        -DHTSlib_LIBRARY=${MY_HTS_LIB}
+        -DHTSlib_INCLUDE_DIR=${MY_HTS_INC}
+
+        # 4. The Sledgehammer: Force the C++ compiler to see the headers regardless of pfp's internal logic
+        "-DCMAKE_CXX_FLAGS=-I${MY_HTS_INC} -I${MY_HTS_INC}/htslib"
+
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install "${PFP_BINARY_DIR}" --prefix "${PFP_INSTALL_DIR}"
+    UPDATE_COMMAND ""
+    LOG_CONFIGURE ON
+    LOG_BUILD     ON
+    LOG_INSTALL   ON
+)
+
+# Copy the pfp++ executable to the project's bin directory alongside
+# columba, columba_build, and leviosam
+ExternalProject_Add_Step(pfp_proj copy_binary
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PFP_INSTALL_DIR}/bin/pfp++"
+        "${CMAKE_BINARY_DIR}/bin/pfp++"
+    DEPENDEES install
+    COMMENT "Copying pfp++ executable to project bin directory"
+)
+
+message(STATUS "pfp (Prefix-Free Parsing) submodule configured.")
+message(STATUS "  Source:  ${PFP_SOURCE_DIR}")
+message(STATUS "  Install: ${PFP_INSTALL_DIR}")
+
+
 # ---- Installation ----
 
 # Install targets to the bin directory
