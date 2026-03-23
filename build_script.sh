@@ -53,8 +53,10 @@ else
 	option_rlc+="OFF"
 fi
 
-cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=Debug  -DHTSLIB_ROOT=/home/students/simjonck/htslib_install"
-
+cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=Debug \
+-DHTSLIB_ROOT=/home/students/simjonck/htslib_install \
+-DSDSL_INCLUDE_DIR=/home/students/simjonck/sdsl-lite/build/include \
+-DSDSL_LIBRARY=/home/students/simjonck/sdsl-lite/build/lib/libsdsl.a"
 # Add bit-width if provided
 if [ -n "$BIT_WIDTH" ]; then
 	option_32="-DTHIRTY_TWO="
