@@ -10,3 +10,6 @@
 [submodule "external/pfp"]
 	path = external/pfp
 	url = https://github.com/SimonJonckheere03/pfp.git
+[submodule "external/htslib"]
+	path = external/htslib
+	url = https://github.com/samtools/htslib.git
