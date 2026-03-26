@@ -1,192 +1,140 @@
 #!/bin/bash
 
 # Script: columba_build_pfp.sh
-# Description: This script performs the Columba build process for PFP.
+# Description: Columba build process using the Moni Hybrid Pipeline with VCF support.
 # Author: Lore Depuydt - lore.depuydt@ugent.be
+# Modified by Simon Jonckheere - simon.jonckheere@ugent.be
 
 # Capture start time
 start_time=$(date +%s)
 
-# We assume that this script is run from the build folder
 columba_build_exe="./columba_build"
-big_bwt_exe="./../external/Big-BWT/bigbwt"
 
-# Default seed length
+# --- EXECUTABLE PLACEHOLDERS ---
+pfp_exe="./bin/pfp++"
+pfp64_exe="./bin/pfp++64"
+bwtparse_exe="../external/Big-BWT/bwtparse"
+bwtparse64_exe="../external/Big-BWT/bwtparse64"
+pfbwtNT_exe=".../external/Big-BWT/pfbwtNT.x"
+pfbwtNT64_exe="../external/Big-BWT/pfbwtNT64.x"
+# -------------------------------
+
 seedLength=100
-
-# Optional Big-BWT parameters
-ws=0  # Default window size (unset means 0)
-mod=0 # Default mod value (unset means 0)
-
-# Array to store fasta files
+ws=0
+mod=0
+haplotype="1"
+vcf_file=""
 fasta_files=()
 
-# Function to show usage
 showUsage() {
-	echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_files>] [-F <fasta_file_list>]"
-	echo
-	echo "Required arguments:"
-	echo "  -r <index_name>   Name/location of the index to be created."
-	echo
-	echo "Optional arguments:"
-	echo "  -f <fasta_files>  Space-separated list of FASTA files."
-	echo "  -F <fasta_file_list>  Path to a file containing a list of FASTA files, one per line."
-	echo "  -l <seedLength>   Seed length for replacing non-ACGT characters (default: $seedLength). 0 means that no seed is used."
-	echo "  -w <ws>           Window size for Big-BWT. If unset, Big-BWT will use its default window size."
-	echo "  -p <mod>          Mod value for Big-BWT. If unset, Big-BWT will use its default mod value."
+    echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_file.fa.gz>] [-V <vcf_file>] [-H <haplotype>]"
+    echo
+    echo "Required arguments:"
+    echo "  -r <index_name>       Name/location of the index to be created."
+    echo
+    echo "Optional arguments:"
+    echo "  -f <fasta_file>       The reference FASTA file (already in .fa.gz format)."
+    echo "  -F <fasta_file_list>  Path to a file containing a list of FASTA files (ensure pfp++ supports multiple if used)."
+    echo "  -V <vcf_file>         VCF file (bgzipped and indexed) to apply to the reference."
+    echo "  -H <haplotype>        Haplotype to extract from VCF (default: 1)."
+    echo "  -l <seedLength>       Seed length for replacing non-ACGT characters (default: $seedLength). *May be obsolete if preprocess is removed.*"
+    echo "  -w <ws>               Window size for Big-BWT."
+    echo "  -p <mod>              Mod value for Big-BWT."
 }
 
-# Function to run a command with /usr/bin/time -v and extract time and memory usage
-# Usage: runCommandWithTime <command> [<args>...]
 runCommandWithTime() {
-	local command="$1"
-	shift
-	# Run the command and capture output, while measuring time and memory usage
-	(/usr/bin/time -v "$command" "$@") || {
-		local status=$?
-		echo "Error: Command '$command $@' failed with exit status $status." >&2
-		exit $status
-	}
+    local command="$1"
+    shift
+    (/usr/bin/time -v "$command" "$@") || {
+        local status=$?
+        echo "Error: Command '$command $@' failed with exit status $status." >&2
+        exit $status
+    }
 }
 
-# Function to parse command-line options
-parseOptions() {
-	# Parse command-line options
-	while getopts ":l:r:f:F:w:p:" opt; do
-		case $opt in
-		l)
-			seedLength=$OPTARG
-			;;
-		r)
-			index_name=$OPTARG
-			;;
-		f)
-			# Collect all subsequent arguments as the list of FASTA files
-			fasta_files+=("$OPTARG")
-			while [[ $OPTIND -le $# && ! ${!OPTIND} =~ ^- ]]; do
-				fasta_files+=("${!OPTIND}")
-				OPTIND=$((OPTIND + 1))
-			done
-			;;
-		F)
-			# Read each line in the specified file and add it to the fasta_files array
-			if [[ -f $OPTARG ]]; then
-				while IFS= read -r line; do
-					fasta_files+=("$line")
-				done <"$OPTARG"
-			else
-				echo "Error: File '$OPTARG' not found." >&2
-				exit 1
-			fi
-			;;
-		w)
-			ws=$OPTARG
-			;;
-		p)
-			mod=$OPTARG
-			;;
-		\?)
-			echo "Invalid option: -$OPTARG" >&2
-			showUsage
-			exit 1
-			;;
-		:)
-			echo "Option -$OPTARG requires an argument." >&2
-			showUsage
-			exit 1
-			;;
-		esac
-	done
-	# Shift off the options and optional --
-	shift $((OPTIND - 1))
-
-	# Ensure required arguments are provided
-	if [ -z "$index_name" ] || [ "${#fasta_files[@]}" -eq 0 ]; then
-		showUsage
-		exit 1
-	fi
-}
-
-# Main script logic
 
 # Parse command-line options
-parseOptions "$@"
-
-echo "Welcome to the Columba build process with prefix-free parsing!"
-echo "-------------------------------------------------------------"
-echo "Index name: $index_name"
-echo "Input FASTA files:"
-for file in "${fasta_files[@]}"; do
-	echo "  $file"
+while getopts ":l:r:f:F:w:p:V:H:" opt; do
+    case $opt in
+        l) seedLength=$OPTARG ;;
+        r) index_name=$OPTARG ;;
+        f)
+            fasta_files+=("$OPTARG")
+            while [[ $OPTIND -le $# && ! ${!OPTIND} =~ ^- ]]; do
+                fasta_files+=("${!OPTIND}")
+                OPTIND=$((OPTIND + 1))
+            done
+            ;;
+        F)
+            if [[ -f $OPTARG ]]; then
+                while IFS= read -r line; do
+                    if [[ -n "$line" ]]; then
+                        fasta_files+=("$line")
+                    fi
+                done <"$OPTARG"
+            else
+                echo "Error: File '$OPTARG' not found." >&2
+                exit 1
+            fi
+            ;;
+        V) vcf_file=$OPTARG ;;
+        H) haplotype=$OPTARG ;;
+        w) ws=$OPTARG ;;
+        p) mod=$OPTARG ;;
+        \?) echo "Invalid option: -$OPTARG" >&2; showUsage; exit 1 ;;
+        :) echo "Option -$OPTARG requires an argument." >&2; showUsage; exit 1 ;;
+    esac
 done
-echo "Seed length: $seedLength"
-echo "Big-BWT window size: ${ws:-not set}"
-echo "Big-BWT mod value: ${mod:-not set}"
-echo "-------------------------------------------------------------"
+shift $((OPTIND - 1))
 
-# Start the preprocessing
-echo "Start preprocessing the fasta file(s) with Columba..."
-runCommandWithTime "$columba_build_exe" --preprocess -l "$seedLength" -r "$index_name" -f "${fasta_files[@]}"
-echo "Preprocessing done!"
+if [ -z "$index_name" ] || [ "${#fasta_files[@]}" -eq 0 ]; then
+    showUsage
+    exit 1
+fi
+
+echo "Welcome to the Columba build process with bidirectional prefix-free parsing!"
 echo "-------------------------------------------------------------"
 
 base="${index_name}"
+# Assuming the user passes a single .fa.gz file as the reference
+ref_archive="${fasta_files[0]}"
 
-# Build Big-BWT command with optional -w and -p arguments
-big_bwt_args=("$big_bwt_exe" -e -s -v "$base")
-if [ "$ws" -gt 0 ]; then
-	big_bwt_args+=(-w "$ws")
-fi
-if [ "$mod" -gt 0 ]; then
-	big_bwt_args+=(-p "$mod")
-fi
+# 1. Run PFP++ ONCE (Generates both Forward and Reverse parses)
+echo "Start Bidirectional Prefix-Free Parsing via pfp++..."
+w_val="${ws:-10}"
+p_val="${mod:-100}"
+if [ "$w_val" -eq 0 ]; then w_val=10; fi
+if [ "$p_val" -eq 0 ]; then p_val=100; fi
 
-# Start the prefix-free parsing
-echo "Start prefix-free parsing for the original string..."
-runCommandWithTime "${big_bwt_args[@]}"
-echo "Prefix-free parsing done!"
+# Passing the input .fa.gz directly to -r
+runCommandWithTime "$pfp64_exe" -w "$w_val" -p "$p_val" -o "$base" -c -i -l --acgt-only -r "$ref_archive" -v "$vcf_file" -H "$haplotype"
+echo "Prefix-free parsing done! (Generated .parse and .rev.parse)"
 echo "-------------------------------------------------------------"
 
-# Adjust the arguments for the reverse string
-big_bwt_args=("$big_bwt_exe" -e -s -v "${base}.rev")
-if [ "$ws" -gt 0 ]; then
-	big_bwt_args+=(-w "$ws")
-fi
-if [ "$mod" -gt 0 ]; then
-	big_bwt_args+=(-p "$mod")
-fi
+# 2. Run BigBWT on the FORWARD strings
+echo "Running Big-BWT on FORWARD parse..."
+runCommandWithTime "$bwtparse64_exe" "$base" -s
+runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "$base"
 
-echo "Start prefix-free parsing for the reverse string..."
-runCommandWithTime "${big_bwt_args[@]}"
-echo "Prefix-free parsing done!"
+# 3. Run BigBWT on the REVERSE strings
+echo "Running Big-BWT on REVERSE parse..."
+runCommandWithTime "$bwtparse64_exe" "${base}.rev" -s
+runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.rev"
+echo "Big-BWT generation complete."
 echo "-------------------------------------------------------------"
 
-# Start building the Columba index
+# 4. Build Columba Index
 echo "Start building the Columba index..."
 runCommandWithTime "$columba_build_exe" --pfp -r "$index_name"
 echo "Columba index built!"
 echo "-------------------------------------------------------------"
 
-# Remove the temporary files
-echo "Remove temporary files..."
-rm "${base}.bwt"
-rm "${base}.rev.bwt"
-rm "${base}.ssa"
-rm "${base}.rev.ssa"
-rm "${base}.esa"
-rm "${base}.rev.esa"
-rm "${base}.log"
-rm "${base}.rev.log"
-rm "${base}"
-rm "${base}.rev"
+# 5. Cleanup
+echo "Cleaning up temporary files..."
+rm -f "${base}.bwt" "${base}.rev.bwt" "${base}.ssa" "${base}.rev.ssa" "${base}.esa" "${base}.rev.esa"
+rm -f "${base}.log" "${base}.rev.log"
+rm -f "${base}.parse" "${base}.dict" "${base}.dicz" "${base}.occ" "${base}.ilist" "${base}.last" "${base}.bwlast"
+rm -f "${base}.rev.parse" "${base}.rev.dict" "${base}.rev.dicz" "${base}.rev.occ" "${base}.rev.ilist" "${base}.rev.last" "${base}.rev.bwlast"
+
 echo "Temporary files removed!"
-echo "-------------------------------------------------------------"
-
-# Capture end time
-end_time=$(date +%s)
-
-# Calculate total elapsed time
-total_time=$((end_time - start_time))
-
-echo "The Columba build process with prefix-free parsing is finished!"
-echo "Total time elapsed: $total_time seconds."
+echo "Total time elapsed: $(($(date +%s) - start_time)) seconds."

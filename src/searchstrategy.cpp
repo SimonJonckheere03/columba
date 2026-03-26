@@ -528,6 +528,8 @@ void SearchStrategy::matchApproxAllMap(ReadBundle& bundle, length_t maxED,
     // C) get all non-redundant matches mapped to the text
     result = (this->*filterPtr)(occ, maxED, counters, bundle);
 
+    // TODO: hier liftover doen op de al gefilterde non-redundant. 
+
     // D) generate sam output
     if (generateSAMLines) {
         generateOutputSingleEnd(result, bundle, counters, maxED);
@@ -739,6 +741,8 @@ void SearchStrategy::matchApproxBestPlusX(ReadBundle& bundle, length_t x,
 
     result = combineOccVectors(occVectorFW, occVectorRC, best,
                                std::min(best + x, cutOff));
+
+    // TODO: liftover here
 
     (this->*generateOutputSEPtr)(bundle, nHits, best, result, counters);
 }

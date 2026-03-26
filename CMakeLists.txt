@@ -107,16 +107,22 @@ add_library(AuxiliaryClasses ${SOURCE_FILES})
 
 # ---- Update Git Submodules ----
 
-find_package(Git QUIET)
-message(STATUS "Checking and updating submodules...")
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    RESULT_VARIABLE GIT_SUBMOD_RESULT
-)
+option(COLUMBA_AUTO_UPDATE_SUBMODULES "Run git submodule update during CMake configure" OFF)
 
-if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-    message(FATAL_ERROR "Failed to initialize git submodules. Please run 'git submodule update --init --recursive' manually.")
+find_package(Git QUIET)
+if(COLUMBA_AUTO_UPDATE_SUBMODULES)
+    message(STATUS "Checking and updating submodules...")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        RESULT_VARIABLE GIT_SUBMOD_RESULT
+    )
+
+    if(NOT GIT_SUBMOD_RESULT EQUAL "0")
+        message(FATAL_ERROR "Failed to initialize git submodules. Please run 'git submodule update --init --recursive' manually.")
+    endif()
+else()
+    message(STATUS "Using currently checked-out submodules (automatic updates disabled)")
 endif()
 
 # Update the Big-BWT submodule
@@ -172,9 +178,8 @@ if(RUN_LENGTH_COMPRESSION)
         set(BIG_BWT_USABLE FALSE)
     endif()
 
-    # Proceed with submodule update if usable
-    if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
-        if(BIG_BWT_USABLE)
+    if(BIG_BWT_USABLE)
+        if(COLUMBA_AUTO_UPDATE_SUBMODULES AND GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
             message(STATUS "Updating Big-BWT submodule")
             execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init -q external/Big-BWT
                             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -183,8 +188,10 @@ if(RUN_LENGTH_COMPRESSION)
                 message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
             endif()
         else()
-            message(WARNING "Prefix-free parsing is not usable due to missing dependencies (Python 3.8 and psutil), if you do not want to use prefix-free parsing you can ignore this message.")
+            message(STATUS "Using local Big-BWT checkout")
         endif()
+    else()
+        message(WARNING "Prefix-free parsing is not usable due to missing dependencies (Python 3.8 and psutil), if you do not want to use prefix-free parsing you can ignore this message.")
     endif()
 endif()
 
@@ -251,13 +258,17 @@ if(THIRTY_TWO)
     target_link_libraries(columba_build libsais)
 else()
     find_package(Git QUIET)
-    # update git submodule libdivsufsort
-    message(STATUS "Updating libdivsufsort submodule")
-    execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init external/libdivsufsort
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                    RESULT_VARIABLE GIT_SUBMOD_RESULT)
-    if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-        message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
+
+    if(COLUMBA_AUTO_UPDATE_SUBMODULES AND GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
+        message(STATUS "Updating libdivsufsort submodule")
+        execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init external/libdivsufsort
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                        RESULT_VARIABLE GIT_SUBMOD_RESULT)
+        if(NOT GIT_SUBMOD_RESULT EQUAL "0")
+            message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
+        endif()
+    else()
+        message(STATUS "Using local libdivsufsort checkout")
     endif()
 
     set(BUILD_DIVSUFSORT64 ON CACHE BOOL "Build divsufsort64")

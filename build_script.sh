@@ -54,6 +54,7 @@ else
 fi
 
 cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=Debug \
+-DCOLUMBA_AUTO_UPDATE_SUBMODULES=OFF \
 -DHTSLIB_ROOT=/home/students/simjonck/htslib_install \
 -DSDSL_INCLUDE_DIR=/home/students/simjonck/sdsl-lite/build/include \
 -DSDSL_LIBRARY=/home/students/simjonck/sdsl-lite/build/lib/libsdsl.a"
