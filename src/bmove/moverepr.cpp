@@ -74,8 +74,8 @@ bool MoveLFReprBP::initialize(length_t nrOfRuns, length_t textSize) {
 
     // Calculate the number of bits required for n and r
     bitsForC = static_cast<uint8_t>(std::ceil(std::log2(ALPHABET)));
-    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
-    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+    bitsForN = calculateBits(std::max<length_t>(2, textSize + 1));
+    bitsForR = calculateBits(std::max<length_t>(2, nrOfRuns + 1));
 
     logger.logInfo("\tBit-packing move structure with " +
                    std::to_string(nrOfRuns) + " runs and text size " +
@@ -116,8 +116,8 @@ bool MoveLFReprBP::load(const std::string& baseFile) {
     ifs.read((char*)&zeroCharPos, sizeof(zeroCharPos));
 
     // Now calculate the number of bits required for n and r
-    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
-    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+    bitsForN = calculateBits(std::max<length_t>(2, textSize + 1));
+    bitsForR = calculateBits(std::max<length_t>(2, nrOfRuns + 1));
     bitsForC = static_cast<uint8_t>(std::ceil(std::log2(ALPHABET)));
 
     // Calculate total bits for each row and convert to bytes
@@ -376,8 +376,8 @@ bool MovePhiReprBP::initialize(length_t nrOfRuns, length_t textSize) {
     this->textSize = textSize;
 
     // Calculate the number of bits required for n and r
-    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
-    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+    bitsForN = calculateBits(std::max<length_t>(2, textSize + 1));
+    bitsForR = calculateBits(std::max<length_t>(2, nrOfRuns + 1));
 
     logger.logInfo("\tInitializing MovePhiReprBP with " +
                    std::to_string(nrOfRuns) + " runs and text size " +
@@ -414,8 +414,8 @@ bool MovePhiReprBP::load(const std::string& fileName) {
     ifs.read(reinterpret_cast<char*>(&nrOfRuns), sizeof(nrOfRuns));
 
     // Now calculate the number of bits required for n and r
-    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
-    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+    bitsForN = calculateBits(std::max<length_t>(2, textSize + 1));
+    bitsForR = calculateBits(std::max<length_t>(2, nrOfRuns + 1));
 
     // Calculate total bits for each row and convert to bytes
     totalBits = 2 * bitsForN + bitsForR; // Two n values and one r value
