@@ -437,6 +437,16 @@ if (NOT TARGET htslib)
     target_include_directories(htslib INTERFACE ${HTS_BUILD_INC})
 endif()
 
+target_include_directories(AuxiliaryClasses PUBLIC "${HTS_BUILD_INC}")
+target_include_directories(AuxiliaryClasses PUBLIC "${HTS_BUILD_INC}/htslib")
+target_link_libraries(AuxiliaryClasses htslib)
+if(TARGET htslib_proj)
+    add_dependencies(AuxiliaryClasses htslib_proj)
+endif()
+if(RUN_LENGTH_COMPRESSION AND MY_SDSL_INC)
+    target_include_directories(AuxiliaryClasses PUBLIC "${MY_SDSL_INC}")
+endif()
+
 # ------------------------------------------------------------------------------
 # PFP - local submodule, linked against the same HTSlib as above
 # ------------------------------------------------------------------------------

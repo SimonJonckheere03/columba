@@ -622,6 +622,138 @@ vector<TextOcc> SearchStrategy::combineOccVectors(OccVector& ovFW,
     return matches;
 }
 
+uint32_t SearchStrategy::getAssignedFragmentSize(const TextOcc& first,
+                                                 const TextOcc& second) {
+    const auto begin =
+        std::min(first.getRange().getBegin(), second.getRange().getBegin());
+    const auto end =
+        std::max(first.getRange().getEnd(), second.getRange().getEnd());
+    return static_cast<uint32_t>(end - begin);
+}
+
+void SearchStrategy::collapseLiftedOccurrences(vector<TextOcc>& occs) const {
+    if (!index.hasLiftover() || occs.size() < 2) {
+        return;
+    }
+
+    auto compare = [](const TextOcc& lhs, const TextOcc& rhs) {
+        if (lhs.getAssignedSequenceID() != rhs.getAssignedSequenceID()) {
+            return lhs.getAssignedSequenceID() < rhs.getAssignedSequenceID();
+        }
+        if (lhs.getBegin() != rhs.getBegin()) {
+            return lhs.getBegin() < rhs.getBegin();
+        }
+        if (lhs.getEnd() != rhs.getEnd()) {
+            return lhs.getEnd() < rhs.getEnd();
+        }
+        if (lhs.getStrand() != rhs.getStrand()) {
+            return lhs.getStrand() < rhs.getStrand();
+        }
+        if (lhs.getDistance() != rhs.getDistance()) {
+            return lhs.getDistance() < rhs.getDistance();
+        }
+        return lhs.getCigar() < rhs.getCigar();
+    };
+
+    auto samePlacement = [](const TextOcc& lhs, const TextOcc& rhs) {
+        return lhs.getAssignedSequenceID() == rhs.getAssignedSequenceID() &&
+               lhs.getBegin() == rhs.getBegin() &&
+               lhs.getEnd() == rhs.getEnd() &&
+               lhs.getStrand() == rhs.getStrand() &&
+               lhs.getDistance() == rhs.getDistance() &&
+               lhs.getCigar() == rhs.getCigar();
+    };
+
+    sort(occs.begin(), occs.end(), compare);
+    vector<TextOcc> collapsed;
+    collapsed.reserve(occs.size());
+    for (auto& occ : occs) {
+        if (collapsed.empty() || !samePlacement(collapsed.back(), occ)) {
+            occ.deduplicateOriginAltTags();
+            collapsed.emplace_back(std::move(occ));
+            continue;
+        }
+        collapsed.back().mergeOriginAltTags(occ);
+    }
+    occs = std::move(collapsed);
+}
+
+void SearchStrategy::collapseLiftedPairs(vector<PairedTextOccs>& pairs) const {
+    if (!index.hasLiftover() || pairs.size() < 2) {
+        return;
+    }
+
+    auto compareOcc = [](const TextOcc& lhs, const TextOcc& rhs) {
+        if (lhs.getAssignedSequenceID() != rhs.getAssignedSequenceID()) {
+            return lhs.getAssignedSequenceID() < rhs.getAssignedSequenceID();
+        }
+        if (lhs.getBegin() != rhs.getBegin()) {
+            return lhs.getBegin() < rhs.getBegin();
+        }
+        if (lhs.getEnd() != rhs.getEnd()) {
+            return lhs.getEnd() < rhs.getEnd();
+        }
+        if (lhs.getStrand() != rhs.getStrand()) {
+            return lhs.getStrand() < rhs.getStrand();
+        }
+        if (lhs.getDistance() != rhs.getDistance()) {
+            return lhs.getDistance() < rhs.getDistance();
+        }
+        return lhs.getCigar() < rhs.getCigar();
+    };
+
+    auto comparePair = [&](const PairedTextOccs& lhs, const PairedTextOccs& rhs) {
+        if (compareOcc(lhs.getUpStream(), rhs.getUpStream())) {
+            return true;
+        }
+        if (compareOcc(rhs.getUpStream(), lhs.getUpStream())) {
+            return false;
+        }
+        if (compareOcc(lhs.getDownStream(), rhs.getDownStream())) {
+            return true;
+        }
+        if (compareOcc(rhs.getDownStream(), lhs.getDownStream())) {
+            return false;
+        }
+        if (lhs.getFragSize() != rhs.getFragSize()) {
+            return lhs.getFragSize() < rhs.getFragSize();
+        }
+        return lhs.isDiscordant() < rhs.isDiscordant();
+    };
+
+    auto sameOcc = [](const TextOcc& lhs, const TextOcc& rhs) {
+        return lhs.getAssignedSequenceID() == rhs.getAssignedSequenceID() &&
+               lhs.getBegin() == rhs.getBegin() &&
+               lhs.getEnd() == rhs.getEnd() &&
+               lhs.getStrand() == rhs.getStrand() &&
+               lhs.getDistance() == rhs.getDistance() &&
+               lhs.getCigar() == rhs.getCigar();
+    };
+
+    auto samePair = [&](const PairedTextOccs& lhs, const PairedTextOccs& rhs) {
+        return sameOcc(lhs.getUpStream(), rhs.getUpStream()) &&
+               sameOcc(lhs.getDownStream(), rhs.getDownStream()) &&
+               lhs.getFragSize() == rhs.getFragSize() &&
+               lhs.isDiscordant() == rhs.isDiscordant();
+    };
+
+    sort(pairs.begin(), pairs.end(), comparePair);
+    vector<PairedTextOccs> collapsed;
+    collapsed.reserve(pairs.size());
+    for (auto& pair : pairs) {
+        if (collapsed.empty() || !samePair(collapsed.back(), pair)) {
+            pair.getUpStream().deduplicateOriginAltTags();
+            pair.getDownStream().deduplicateOriginAltTags();
+            collapsed.emplace_back(std::move(pair));
+            continue;
+        }
+        collapsed.back().getUpStream().mergeOriginAltTags(pair.getUpStream());
+        collapsed.back().getDownStream().mergeOriginAltTags(
+            pair.getDownStream());
+    }
+    pairs = std::move(collapsed);
+}
+
 bool SearchStrategy::findBestAlignments(const ReadBundle& bundle,
                                         OccVector& ovFW, OccVector& ovRC,
                                         Counters& counters, uint32_t x,
@@ -742,7 +874,7 @@ void SearchStrategy::matchApproxBestPlusX(ReadBundle& bundle, length_t x,
     result = combineOccVectors(occVectorFW, occVectorRC, best,
                                std::min(best + x, cutOff));
 
-    // TODO: liftover here
+    collapseLiftedOccurrences(result);
 
     (this->*generateOutputSEPtr)(bundle, nHits, best, result, counters);
 }
@@ -1303,7 +1435,9 @@ void SearchStrategy::pairOccurrences(vector<TextOcc>& upstreamOccs,
 
         // find the index of first match of the downstream read that is
         // after the upstream read
-        auto it = findFirstOccAfter(downStreamOccs, upstreamPos);
+        auto it = index.hasLiftover() ? downStreamOccs.begin()
+                                      : findFirstOccAfter(downStreamOccs,
+                                                          upstreamPos);
 
         // loop over all matches of downstream read that are after the
         // upstream read
@@ -1313,7 +1447,8 @@ void SearchStrategy::pairOccurrences(vector<TextOcc>& upstreamOccs,
 
             length_t fragSize = (it->getIndexEnd()) - upstreamPos;
 
-            if (fragSize <= maxFragSize && fragSize >= minFragSize) {
+            if (index.hasLiftover() ||
+                (fragSize <= maxFragSize && fragSize >= minFragSize)) {
                 // found a pair
                 // assign sequence if not assigned yet
 
@@ -1335,9 +1470,25 @@ void SearchStrategy::pairOccurrences(vector<TextOcc>& upstreamOccs,
                     continue;
                 }
 
-                pairs.push_back({upStreamOcc, *it});
+                if (index.hasLiftover()) {
+                    const auto liftedFrag =
+                        getAssignedFragmentSize(upStreamOcc, *it);
+                    if (liftedFrag < minFragSize || liftedFrag > maxFragSize) {
+                        continue;
+                    }
+                    auto& upstreamLifted =
+                        (upStreamOcc.getBegin() <= it->getBegin()) ? upStreamOcc
+                                                                   : *it;
+                    auto& downstreamLifted =
+                        (upStreamOcc.getBegin() <= it->getBegin()) ? *it
+                                                                   : upStreamOcc;
+                    pairs.emplace_back(upstreamLifted, downstreamLifted,
+                                       liftedFrag);
+                } else {
+                    pairs.push_back({upStreamOcc, *it});
+                }
 
-            } else if (fragSize > maxFragSize) {
+            } else if (!index.hasLiftover() && fragSize > maxFragSize) {
                 // since the matches are sorted, we can stop the
                 // loop
                 break;
@@ -1432,6 +1583,8 @@ void SearchStrategy::addUnpairedMatches(vector<TextOcc>& allMatches,
         }
         return;
     }
+
+    collapseLiftedOccurrences(temp);
 
 // sort on distance score
 #ifdef DEVELOPER_MODE
@@ -1768,7 +1921,9 @@ void SearchStrategy::pairOccurrencesForBestMapping(
 
         // find the index of first match of the downstream read that is
         // after the upstream read
-        auto it = findFirstOccAfter(downStreamOccs, upstreamPos);
+        auto it = index.hasLiftover() ? downStreamOccs.begin()
+                                      : findFirstOccAfter(downStreamOccs,
+                                                          upstreamPos);
 
         // loop over all matches of downstream read that are after the
         // upstream read
@@ -1778,7 +1933,8 @@ void SearchStrategy::pairOccurrencesForBestMapping(
 
             length_t fragSize = (it->getIndexEnd()) - upstreamPos;
 
-            if (fragSize <= maxFragSize && fragSize >= minFragSize) {
+            if (index.hasLiftover() ||
+                (fragSize <= maxFragSize && fragSize >= minFragSize)) {
                 // found a pair
                 // assign sequence if not assigned yet
 
@@ -1811,9 +1967,25 @@ void SearchStrategy::pairOccurrencesForBestMapping(
                     continue;
                 }
 
-                pairs.push_back({upStreamOcc, *it});
+                if (index.hasLiftover()) {
+                    const auto liftedFrag =
+                        getAssignedFragmentSize(upStreamOcc, *it);
+                    if (liftedFrag < minFragSize || liftedFrag > maxFragSize) {
+                        continue;
+                    }
+                    auto& upstreamLifted =
+                        (upStreamOcc.getBegin() <= it->getBegin()) ? upStreamOcc
+                                                                   : *it;
+                    auto& downstreamLifted =
+                        (upStreamOcc.getBegin() <= it->getBegin()) ? *it
+                                                                   : upStreamOcc;
+                    pairs.emplace_back(upstreamLifted, downstreamLifted,
+                                       liftedFrag);
+                } else {
+                    pairs.push_back({upStreamOcc, *it});
+                }
 
-            } else if (fragSize > maxFragSize) {
+            } else if (!index.hasLiftover() && fragSize > maxFragSize) {
                 // since the matches are sorted, we can stop the
                 // loop
                 break;
@@ -1855,6 +2027,8 @@ void SearchStrategy::generateOutputSingleEnd(vector<TextOcc>& occs,
 
     // keep only the occurrences that have an assigned sequence
     occs = std::move(assignedOccs);
+
+    collapseLiftedOccurrences(occs);
 
     if (occs.empty()) {
         if (unmappedSAM) {
@@ -1911,6 +2085,8 @@ void SearchStrategy::generateSAMPairedEnd(vector<PairedTextOccs>& pairedMatches,
     if (pairedMatches.empty()) {
         return;
     }
+
+    collapseLiftedPairs(pairedMatches);
 
 // sort the paired matches on their
 // cumulative distance score

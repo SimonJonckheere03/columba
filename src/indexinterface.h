@@ -39,6 +39,7 @@
 
 class MemoryMappedTextFile;
 class Search;
+struct LiftoverRuntimeIndex;
 
 class IndexInterface;
 typedef bool (IndexInterface::*ExtraCharPtr)(length_t, const SARangePair&,
@@ -92,6 +93,7 @@ class IndexInterface {
     std::vector<length_t> startPos;    // the start positions of the sequences
     std::vector<std::string> seqNames; // the names of the sequences
     std::vector<length_t> firstSeqIDPerFile; // the first seqID per FASTA file
+    std::shared_ptr<LiftoverRuntimeIndex> liftoverIndex;
 
     bool noCIGAR = false; // do not calculate the CIGAR string
 
@@ -130,6 +132,16 @@ class IndexInterface {
      */
     void readSequenceNamesAndPositions(const std::string& baseFile,
                                        bool verbose);
+
+    void readLiftoverMetadata(const std::string& baseFile, bool verbose);
+
+    static bool findContainingSequence(const std::vector<length_t>& starts,
+                                       length_t begin, length_t end,
+                                       length_t& seqID, Range& relativeRange);
+
+    length_t liftPosition(length_t seqID, length_t payloadPos) const;
+
+    static length_t cigarReferenceLength(const std::string& cigar);
 
     /**
      * Read a binary file and stores content in array
@@ -521,7 +533,7 @@ class IndexInterface {
      * @brief Destructor
      *
      */
-    virtual ~IndexInterface() = default;
+    virtual ~IndexInterface();
 
     /**
      * Get the complete range of this index corresponding to an exact match of
@@ -595,8 +607,15 @@ class IndexInterface {
     }
 
     const std::vector<std::string>& getSeqNames() const {
-        return seqNames;
+        return (liftoverIndex && hasLiftover()) ? getLiftedSeqNames()
+                                                : seqNames;
     }
+
+    bool hasLiftover() const {
+        return liftoverIndex != nullptr;
+    }
+
+    const std::vector<std::string>& getLiftedSeqNames() const;
 
     /**
      * Finds the sequence name to which the given text-occurrence belongs. Also

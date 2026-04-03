@@ -32,6 +32,10 @@
 #include <limits>                   // for numeric_limits
 #include <memory>                   // for allocator_traits<>::value_type
 #include <parallel_hashmap/phmap.h> // phmap::parallel_flat_hash_map
+#include <cctype>
+#include <sdsl/bit_vectors.hpp>
+#include "../external/leviosam/src/leviosam.hpp"
+#include <sdsl/util.hpp>
 #include <stdexcept>                // for runtime_error
 #include <type_traits>              // for __strip_reference_wrapper<>::__type
 
@@ -49,6 +53,117 @@
 #endif
 
 using namespace std;
+
+struct LiftoverRuntimeIndex {
+    size_t referenceCount = 0;
+    size_t window = 0;
+    sdsl::sd_vector<> payloadStarts;
+    std::vector<std::pair<lift::Lift, size_t>> lifts;
+    std::vector<length_t> liftedStartPos;
+    std::vector<std::string> liftedSeqNames;
+};
+
+namespace {
+
+bool hasExplicitCigar(const std::string& cigar) {
+    return !cigar.empty() && cigar != "*";
+}
+
+std::vector<uint32_t> parseCigarOps(const std::string& cigar) {
+    std::vector<uint32_t> ops;
+    if (cigar.empty() || cigar == "*") {
+        return ops;
+    }
+
+    uint32_t number = 0;
+    bool sawDigit = false;
+    for (char c : cigar) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            number = (number * 10) + static_cast<uint32_t>(c - '0');
+            sawDigit = true;
+            continue;
+        }
+
+        if (!sawDigit || number == 0) {
+            throw std::runtime_error("Malformed CIGAR string: " + cigar);
+        }
+
+        int op = -1;
+        switch (c) {
+        case 'M':
+            op = BAM_CMATCH;
+            break;
+        case 'I':
+            op = BAM_CINS;
+            break;
+        case 'D':
+            op = BAM_CDEL;
+            break;
+        case 'N':
+            op = BAM_CREF_SKIP;
+            break;
+        case 'S':
+            op = BAM_CSOFT_CLIP;
+            break;
+        case 'H':
+            op = BAM_CHARD_CLIP;
+            break;
+        case 'P':
+            op = BAM_CPAD;
+            break;
+        case '=':
+            op = BAM_CEQUAL;
+            break;
+        case 'X':
+            op = BAM_CDIFF;
+            break;
+        default:
+            throw std::runtime_error("Unsupported CIGAR op in string: " +
+                                     cigar);
+        }
+
+        ops.push_back(bam_cigar_gen(number, op));
+        number = 0;
+        sawDigit = false;
+    }
+
+    if (sawDigit) {
+        throw std::runtime_error("Malformed CIGAR string: " + cigar);
+    }
+
+    return ops;
+}
+
+std::string formatCigarOps(const std::vector<uint32_t>& ops) {
+    std::string cigar;
+    for (uint32_t op : ops) {
+        cigar += fmt::format("{}{}", bam_cigar_oplen(op),
+                             bam_cigar_opchr(op));
+    }
+    return cigar;
+}
+
+length_t cigarReferenceSpan(const std::vector<uint32_t>& ops) {
+    length_t value = 0;
+    for (uint32_t op : ops) {
+        if (bam_cigar_type(bam_cigar_op(op)) & 2) {
+            value += bam_cigar_oplen(op);
+        }
+    }
+    return value;
+}
+
+length_t cigarReadSpan(const std::vector<uint32_t>& ops) {
+    length_t value = 0;
+    for (uint32_t op : ops) {
+        if (bam_cigar_type(bam_cigar_op(op)) & 1) {
+            value += bam_cigar_oplen(op);
+        }
+    }
+    return value;
+}
+
+} // namespace
 
 // ============================================================================
 // CLASS IndexInterface
@@ -69,6 +184,12 @@ thread_local BitParallelED128* IndexInterface::fullReadMatrix128;
 
 thread_local vector<BitParallelED64> IndexInterface::fullReadMatrices(4);
 thread_local BitParallelED64* IndexInterface::fullReadMatrix;
+
+IndexInterface::~IndexInterface() = default;
+
+const vector<string>& IndexInterface::getLiftedSeqNames() const {
+    return liftoverIndex->liftedSeqNames;
+}
 
 // ----------------------------------------------------------------------------
 // PREPROCESSING ROUTINES
@@ -177,12 +298,17 @@ void IndexInterface::readSequenceNamesAndPositions(const string& baseFN,
                                 ".sna\nIs the reference index outdated?");
         }
 
-        while (ifs.good()) {
+        while (true) {
             size_t len;
-            ifs.read(reinterpret_cast<char*>(&len), sizeof(len));
+            if (!ifs.read(reinterpret_cast<char*>(&len), sizeof(len))) {
+                break;
+            }
 
             string str(len, ' ');
-            ifs.read(&str[0], len);
+            if (!ifs.read(&str[0], len)) {
+                throw runtime_error("Cannot read file: " + baseFile +
+                                    ".sna\nIs the reference index outdated?");
+            }
 
             seqNames.push_back(str);
         }
@@ -201,6 +327,147 @@ void IndexInterface::readSequenceNamesAndPositions(const string& baseFN,
                                 ".fsid\nIs the reference index outdated?");
         }
     }
+
+    readLiftoverMetadata(baseFN, verbose);
+}
+
+void IndexInterface::readLiftoverMetadata(const string& baseFN, bool verbose) {
+    const string liftFile = baseFN + ".ldx";
+
+    ifstream liftIn(liftFile, ios::binary);
+    if (!liftIn) {
+        liftoverIndex.reset();
+        return;
+    }
+
+    liftoverIndex = std::make_shared<LiftoverRuntimeIndex>();
+
+    stringstream ss;
+    if (verbose) {
+        ss << "Reading " << liftFile << "...";
+        logger.logInfo(ss);
+    }
+
+    size_t payloadUniverseSize = 0;
+    liftIn.read(reinterpret_cast<char*>(&payloadUniverseSize),
+                sizeof(payloadUniverseSize));
+    liftIn.read(reinterpret_cast<char*>(&liftoverIndex->window),
+                sizeof(liftoverIndex->window));
+    if (!liftIn) {
+        throw runtime_error("Cannot read lifting header from " + liftFile);
+    }
+
+    liftoverIndex->payloadStarts.load(liftIn);
+    sdsl::sd_vector<>::select_1_type payloadStartSelect(
+        &liftoverIndex->payloadStarts);
+
+    size_t namesSize = 0;
+    sdsl::load(namesSize, liftIn);
+    std::vector<std::string> payloadNames(namesSize);
+    for (size_t i = 0; i < namesSize; ++i) {
+        size_t stringSize = 0;
+        sdsl::load(stringSize, liftIn);
+        payloadNames[i].resize(stringSize);
+        liftIn.read(&payloadNames[i][0], static_cast<std::streamsize>(stringSize));
+    }
+
+    sdsl::load(liftoverIndex->referenceCount, liftIn);
+    liftoverIndex->lifts.resize(payloadNames.size());
+    for (size_t i = 0; i < liftoverIndex->lifts.size(); ++i) {
+        sdsl::load(liftoverIndex->lifts[i].second, liftIn);
+        liftoverIndex->lifts[i].first.load(liftIn);
+    }
+
+    if (payloadNames.size() != seqNames.size() ||
+        liftoverIndex->lifts.size() != seqNames.size() ||
+        startPos.size() != (payloadNames.size() + 1)) {
+        throw runtime_error("Payload-space liftover metadata does not match "
+                            "the Columba sequence inventory in " +
+                            liftFile);
+    }
+
+    for (size_t i = 0; i < payloadNames.size(); ++i) {
+        if (payloadNames[i] != seqNames[i]) {
+            throw runtime_error("Sequence order mismatch between .sna and .ldx "
+                                "in " +
+                                liftFile);
+        }
+        const auto start = static_cast<length_t>(payloadStartSelect(i + 1));
+        if (start != startPos[i]) {
+            throw runtime_error("Sequence starts mismatch between .pos and "
+                                ".ldx in " +
+                                liftFile);
+        }
+    }
+    if (payloadUniverseSize !=
+        (static_cast<size_t>(startPos.back()) + static_cast<size_t>(1))) {
+        throw runtime_error("Payload universe size mismatch between .pos and "
+                            ".ldx in " +
+                            liftFile);
+    }
+
+    if (liftoverIndex->referenceCount == 0 ||
+        liftoverIndex->referenceCount > seqNames.size() ||
+        liftoverIndex->referenceCount >= startPos.size()) {
+        throw runtime_error("Invalid liftover metadata in " + liftFile);
+    }
+
+    liftoverIndex->liftedSeqNames.assign(
+        seqNames.begin(), seqNames.begin() + liftoverIndex->referenceCount);
+    liftoverIndex->liftedStartPos.assign(startPos.begin(),
+                                         startPos.begin() +
+                                             static_cast<ptrdiff_t>(
+                                                 liftoverIndex->referenceCount) +
+                                             1);
+}
+
+bool IndexInterface::findContainingSequence(const vector<length_t>& starts,
+                                           length_t begin, length_t end,
+                                           length_t& seqID,
+                                           Range& relativeRange) {
+    auto it = upper_bound(starts.begin(), starts.end(), begin);
+    if (it == starts.begin()) {
+        return false;
+    }
+    seqID = static_cast<length_t>(distance(starts.begin(), --it));
+    if ((seqID + 1) >= starts.size() || end > starts[seqID + 1]) {
+        return false;
+    }
+    relativeRange = Range(begin - starts[seqID], end - starts[seqID]);
+    return true;
+}
+
+length_t IndexInterface::liftPosition(length_t seqID, length_t payloadPos) const {
+    if (!liftoverIndex || seqID >= liftoverIndex->lifts.size()) {
+        throw runtime_error("Invalid payload-space lift request");
+    }
+    const auto& liftEntry = liftoverIndex->lifts[seqID];
+    return static_cast<length_t>(liftEntry.second +
+                                 liftEntry.first.lift_pos(payloadPos));
+}
+
+length_t IndexInterface::cigarReferenceLength(const string& cigar) {
+    length_t value = 0;
+    length_t number = 0;
+    for (char c : cigar) {
+        if (isdigit(static_cast<unsigned char>(c))) {
+            number = (number * 10) + (c - '0');
+            continue;
+        }
+        switch (c) {
+        case 'M':
+        case '=':
+        case 'X':
+        case 'D':
+        case 'N':
+            value += number;
+            break;
+        default:
+            break;
+        }
+        number = 0;
+    }
+    return value;
 }
 
 bool IndexInterface::readArray(const string& filename,
@@ -801,6 +1068,72 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
                                          length_t largestStratum,
                                          const DistanceMetric& metric,
                                          const string& pattern) const {
+    if (liftoverIndex) {
+        auto& range = t.getRange();
+        const auto begin = range.getBegin();
+        const auto end = range.getEnd();
+
+        length_t originSeqID = 0;
+        Range originRange;
+        if (!findContainingSequence(startPos, begin, end, originSeqID,
+                                    originRange)) {
+            return NOT_FOUND;
+        }
+
+        const auto liftedBegin =
+            liftPosition(originSeqID, originRange.getBegin());
+        const string originCigar = t.getCigar();
+        length_t liftedEnd = 0;
+
+        if (hasExplicitCigar(originCigar)) {
+            try {
+                const auto originOps = parseCigarOps(originCigar);
+                const auto originRefSpan = cigarReferenceSpan(originOps);
+                const auto originReadSpan = cigarReadSpan(originOps);
+                if (originOps.empty() || originRefSpan == 0 ||
+                    originReadSpan == 0 ||
+                    originRefSpan != originRange.width()) {
+                    return NOT_FOUND;
+                }
+
+                const auto liftedOps =
+                    liftoverIndex->lifts[originSeqID].first.lift_cigar_vector(
+                        originRange.getBegin(), originOps);
+                const auto liftedRefSpan = cigarReferenceSpan(liftedOps);
+                const auto liftedReadSpan = cigarReadSpan(liftedOps);
+                if (liftedOps.empty() || liftedRefSpan == 0 ||
+                    liftedReadSpan == 0) {
+                    return NOT_FOUND;
+                }
+
+                t.setCigar(formatCigarOps(liftedOps));
+                liftedEnd = liftedBegin + liftedRefSpan;
+            } catch (const std::exception&) {
+                return NOT_FOUND;
+            }
+        } else {
+            const auto liftedLast =
+                liftPosition(originSeqID, originRange.getEnd() - 1);
+            liftedEnd = liftedLast + 1;
+        }
+
+        Range liftedRange;
+        if (!findContainingSequence(liftoverIndex->liftedStartPos, liftedBegin,
+                                    liftedEnd, seqID, liftedRange)) {
+            return NOT_FOUND;
+        }
+
+        t.setOriginAssignment(originSeqID, originRange, originCigar);
+        range = liftedRange;
+
+        char sign = t.isRevCompl() ? '-' : '+';
+        t.addOriginAltTag(fmt::format(
+            "{},{}{},{},{};", seqNames[originSeqID], sign,
+            originRange.getBegin() + 1, originCigar, t.getDistance()));
+        t.deduplicateOriginAltTags();
+        return FOUND;
+    }
+
     // returns FOUND if successful without trimming
     // returns FOUND_WITH_TRIMMING if trimming was needed
     // return NOT_FOUND if no name could be found

@@ -292,21 +292,28 @@ class TextOcc {
     length_t distance; // the distance to this range (edit or hamming)
 
     std::string stringCIGAR = ""; // Start with the empty string
+    std::string originCIGAR = "";
 
     length_t assignedSequenceID = -1; // the ID of the assigned sequence
+    length_t originSequenceID = -1;
 
     bool seqNameChecked = false; // indicates whether the sequence name was
     // found for this occurrence
     SeqNameFound seqNameFound = NOT_FOUND; // indicates whether
+    bool originAssigned = false;
+    bool pfpRangeSet = false;
 
     Strand strand = FORWARD_STRAND; // the strand on which this occurrence lies
     PairStatus pairStatus = FIRST_IN_PAIR; // indicates whether this occurrence
     // is the first read in a pair
 
     std::string outputLine = ""; // the output line for this text Occ
+    std::vector<std::string> originAltTags;
 
     length_t indexBegin; // the position in the indexed text where the
     // occurrence starts
+    Range originRange;
+    Range pfpRange;
 
 #ifdef RUN_LENGTH_COMPRESSION
     std::vector<char> matchedStr; // Set to empty string by default.
@@ -420,6 +427,22 @@ class TextOcc {
                            stringCIGAR, distance);
     }
 
+    void appendOriginAlternates() {
+        if (originAltTags.empty()) {
+            return;
+        }
+
+        if (!outputLine.empty() && outputLine.back() == '\n') {
+            outputLine.pop_back();
+        }
+
+        outputLine += "\tXV:Z:";
+        for (const auto& tag : originAltTags) {
+            outputLine += tag;
+        }
+        outputLine += "\n";
+    }
+
   public:
     /**
      * Constructor
@@ -455,11 +478,16 @@ class TextOcc {
     TextOcc(TextOcc&& other) noexcept
         : range(std::move(other.range)), distance(other.distance),
           stringCIGAR(std::move(other.stringCIGAR)),
+          originCIGAR(std::move(other.originCIGAR)),
           assignedSequenceID(other.assignedSequenceID),
+          originSequenceID(other.originSequenceID),
           seqNameChecked(other.seqNameChecked),
-          seqNameFound(other.seqNameFound), strand(other.strand),
+          seqNameFound(other.seqNameFound), originAssigned(other.originAssigned),
+          pfpRangeSet(other.pfpRangeSet), strand(other.strand),
           pairStatus(other.pairStatus), outputLine(std::move(other.outputLine)),
-          indexBegin(other.indexBegin)
+          originAltTags(std::move(other.originAltTags)),
+          indexBegin(other.indexBegin), originRange(other.originRange),
+          pfpRange(other.pfpRange)
 #ifdef RUN_LENGTH_COMPRESSION
           ,
           matchedStr(std::move(other.matchedStr))
@@ -474,13 +502,20 @@ class TextOcc {
     // make explicit copy constructor
     TextOcc copy() const {
         TextOcc copy(range, distance, stringCIGAR, strand, pairStatus);
+        copy.originCIGAR = originCIGAR;
         copy.assignedSequenceID = assignedSequenceID;
+        copy.originSequenceID = originSequenceID;
         copy.seqNameChecked = seqNameChecked;
         copy.seqNameFound = seqNameFound;
+        copy.originAssigned = originAssigned;
+        copy.pfpRangeSet = pfpRangeSet;
         copy.strand = strand;
         copy.pairStatus = pairStatus;
         copy.outputLine = outputLine;
+        copy.originAltTags = originAltTags;
         copy.indexBegin = indexBegin;
+        copy.originRange = originRange;
+        copy.pfpRange = pfpRange;
 #ifdef RUN_LENGTH_COMPRESSION
         copy.matchedStr = matchedStr;
 #endif
@@ -493,13 +528,20 @@ class TextOcc {
             range = std::move(other.range);
             distance = other.distance;
             stringCIGAR = std::move(other.stringCIGAR);
+            originCIGAR = std::move(other.originCIGAR);
             assignedSequenceID = other.assignedSequenceID;
+            originSequenceID = other.originSequenceID;
             seqNameChecked = other.seqNameChecked;
             seqNameFound = other.seqNameFound;
+            originAssigned = other.originAssigned;
+            pfpRangeSet = other.pfpRangeSet;
             strand = other.strand;
             pairStatus = other.pairStatus;
             outputLine = std::move(other.outputLine);
+            originAltTags = std::move(other.originAltTags);
             indexBegin = other.indexBegin;
+            originRange = other.originRange;
+            pfpRange = other.pfpRange;
 #ifdef RUN_LENGTH_COMPRESSION
             matchedStr = std::move(other.matchedStr);
 #endif
@@ -633,6 +675,7 @@ class TextOcc {
 
         generateSAMSingleEnd(bundle.getSeqID(), printSeq, printQual, nHits,
                              minScore, true, seqNames);
+        appendOriginAlternates();
     }
 
     /**
@@ -677,6 +720,7 @@ class TextOcc {
 
         // print * for sequence and quality
         generateSAMSingleEnd(seqID, "*", "*", nHits, minScore, false, seqNames);
+        appendOriginAlternates();
     }
 
     /**
@@ -860,6 +904,72 @@ class TextOcc {
     std::string& getCigar() {
 
         return stringCIGAR;
+    }
+
+    const std::string& getCigar() const {
+        return stringCIGAR;
+    }
+
+    void setOriginAssignment(length_t seqID, const Range& range,
+                             const std::string& cigar) {
+        originSequenceID = seqID;
+        originRange = range;
+        originCIGAR = cigar;
+        originAssigned = true;
+    }
+
+    bool hasOriginAssignment() const {
+        return originAssigned;
+    }
+
+    length_t getOriginSequenceID() const {
+        return originSequenceID;
+    }
+
+    const Range& getOriginRange() const {
+        return originRange;
+    }
+
+    const std::string& getOriginCigar() const {
+        return originCIGAR;
+    }
+
+    void addOriginAltTag(const std::string& tag) {
+        originAltTags.push_back(tag);
+    }
+
+    void clearOriginAltTags() {
+        originAltTags.clear();
+    }
+
+    void deduplicateOriginAltTags() {
+        std::sort(originAltTags.begin(), originAltTags.end());
+        originAltTags.erase(std::unique(originAltTags.begin(),
+                                        originAltTags.end()),
+                            originAltTags.end());
+    }
+
+    void mergeOriginAltTags(const TextOcc& other) {
+        originAltTags.insert(originAltTags.end(), other.originAltTags.begin(),
+                             other.originAltTags.end());
+        deduplicateOriginAltTags();
+    }
+
+    const std::vector<std::string>& getOriginAltTags() const {
+        return originAltTags;
+    }
+
+    void setPfpRange(const Range& range) {
+        pfpRange = range;
+        pfpRangeSet = true;
+    }
+
+    bool hasPfpRange() const {
+        return pfpRangeSet;
+    }
+
+    const Range& getPfpRange() const {
+        return pfpRange;
     }
 
     /**

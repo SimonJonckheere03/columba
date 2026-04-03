@@ -1695,6 +1695,13 @@ class SearchStrategy {
      */
     void generateOutputSingleEnd(std::vector<TextOcc>& occs, ReadBundle& bundle,
                                  Counters& counters, length_t cutOff) const;
+
+    void collapseLiftedOccurrences(std::vector<TextOcc>& occs) const;
+
+    void collapseLiftedPairs(std::vector<PairedTextOccs>& pairs) const;
+
+    static uint32_t getAssignedFragmentSize(const TextOcc& first,
+                                            const TextOcc& second);
     /**
      * Generates the SAM lines for paired matches. This function assumes
      * that the occurrences have a CIGAR string and an assigned sequence.
@@ -2042,6 +2049,11 @@ class SearchStrategy {
                   length_t maxFragSize, length_t minFragSize,
                   Counters& counters,
                   std::vector<TextOcc>& unpairedOccurrences) {
+        if (index.hasLiftover()) {
+            throw std::runtime_error(
+                "Paired-end alignment is not supported for payload-space "
+                "liftover indices");
+        }
         return (this->*matchPtrPE)(pair, maxEDOrIdentity, maxFragSize,
                                    minFragSize, counters, unpairedOccurrences);
     }
@@ -2072,6 +2084,11 @@ class SearchStrategy {
                   length_t minFragSize, length_t maxEDOrMinIdentity,
                   std::vector<TextOcc>& unpairedOccurrences, Counters& counters,
                   bool read2done) {
+        if (index.hasLiftover()) {
+            throw std::runtime_error(
+                "Paired-end alignment is not supported for payload-space "
+                "liftover indices");
+        }
         return (this->*pairSEPtr)(matches1, matches2, maxFragSize, minFragSize,
                                   counters, readPair, maxEDOrMinIdentity,
                                   unpairedOccurrences, read2done);

@@ -96,64 +96,38 @@ requireArtifacts() {
 
 writeSequenceMetadataFromPFP() {
     local base="$1"
-    python3 - "$base" <<'PY'
+    local ref_archive="$2"
+    python3 - "$base" "$ref_archive" <<'PY'
+import gzip
 import struct
 import sys
 from pathlib import Path
 
 base = Path(sys.argv[1])
+ref_archive = Path(sys.argv[2])
 lidx_path = Path(f"{base}.lidx")
-map_path = Path(f"{base}.bbwt.map")
 
 if not lidx_path.is_file():
     raise SystemExit(f"Missing .lidx file: {lidx_path}")
-if not map_path.is_file():
-    raise SystemExit(f"Missing .bbwt.map file: {map_path}")
+if not ref_archive.is_file():
+    raise SystemExit(f"Missing reference FASTA: {ref_archive}")
 
 names = []
-pfp_lengths = []
+payload_lengths = []
 for raw_line in lidx_path.read_text().splitlines():
     line = raw_line.strip()
     if not line:
         continue
     name, length = line.rsplit(maxsplit=1)
-    if name.endswith("_ref"):
-        name = name[:-4]
     names.append(name)
-    pfp_lengths.append(int(length))
-
-map_bytes = map_path.read_bytes()
-if len(map_bytes) < 16:
-    raise SystemExit(f"Invalid .bbwt.map header: {map_path}")
-
-pfp_total, bbwt_total = struct.unpack_from("<QQ", map_bytes, 0)
-bit_bytes = map_bytes[16:]
-
-def bit_is_set(idx: int) -> bool:
-    return bool(bit_bytes[idx // 8] & (1 << (idx % 8)))
-
-if sum(pfp_lengths) > pfp_total:
-    raise SystemExit(
-        f".lidx spans {sum(pfp_lengths)} PFP positions but .bbwt.map declares only {pfp_total}"
-    )
+    payload_lengths.append(int(length))
 
 positions = []
-bbwt_pos = 0
-pfp_offset = 0
-for pfp_len in pfp_lengths:
-    positions.append(bbwt_pos)
-    kept = 0
-    for idx in range(pfp_offset, pfp_offset + pfp_len):
-        if bit_is_set(idx):
-            kept += 1
-    bbwt_pos += kept
-    pfp_offset += pfp_len
-positions.append(bbwt_pos)
-
-if bbwt_pos != bbwt_total:
-    raise SystemExit(
-        f"Derived payload length {bbwt_pos} does not match .bbwt.map payload length {bbwt_total}"
-    )
+payload_pos = 0
+for payload_len in payload_lengths:
+    positions.append(payload_pos)
+    payload_pos += payload_len
+positions.append(payload_pos)
 
 (base.parent / f"{base.name}.pos").write_bytes(
     b"".join(struct.pack("<Q", value) for value in positions)
@@ -167,9 +141,30 @@ with (base.parent / f"{base.name}.sna").open("wb") as handle:
 
 (base.parent / f"{base.name}.fsid").write_bytes(struct.pack("<Q", 0))
 
+reference_names = []
+reference_lengths = []
+with gzip.open(ref_archive, "rt") as handle:
+    current_name = None
+    current_length = 0
+    for raw_line in handle:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if current_name is not None:
+                reference_names.append(current_name)
+                reference_lengths.append(current_length)
+            current_name = line[1:].split()[0]
+            current_length = 0
+        else:
+            current_length += len(line)
+    if current_name is not None:
+        reference_names.append(current_name)
+        reference_lengths.append(current_length)
+
 with (base.parent / f"{base.name}.headerSN.bin").open("wb") as handle:
-    for i, name in enumerate(names):
-        handle.write(f"@SQ\tSN:{name}\tLN:{positions[i + 1] - positions[i]}\n".encode())
+    for name, length in zip(reference_names, reference_lengths):
+        handle.write(f"@SQ\tSN:{name}\tLN:{length}\n".encode())
 PY
 }
 
@@ -274,8 +269,8 @@ runCommandWithTime "${pfp_cmd[@]}"
 requireArtifacts "forward PFP" \
     "${base}.parse" "${base}.dict" "${base}.last" "${base}.sai" "${base}.occ" "${base}.lidx" "${base}.ldx"
 requireArtifacts "Big-BWT payloads" \
-    "${base}.bbwt" "${base}.bbwt.map" "${base}.rev.bbwt" "${base}.rev.bbwt.map"
-writeSequenceMetadataFromPFP "$base"
+    "${base}.bbwt" "${base}.rev.bbwt"
+writeSequenceMetadataFromPFP "$base" "$ref_archive"
 requireArtifacts "sequence metadata" \
     "${base}.headerSN.bin" "${base}.pos" "${base}.sna" "${base}.fsid"
 echo "Prefix-free parsing done."

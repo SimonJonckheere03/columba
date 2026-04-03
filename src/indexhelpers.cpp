@@ -109,6 +109,7 @@ void TextOcc::generateSAMSingleEndXA(
         outputLine += it->asXA(seqNames); // Use the iterator to access elements
     }
     outputLine += "\n";
+    appendOriginAlternates();
 }
 
 void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
@@ -159,6 +160,7 @@ void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
         distance,                                // alignment score of this read
         distance // distance to reference of this read
     );
+    appendOriginAlternates();
 }
 
 TextOcc TextOcc::createUnmappedSAMOccurrenceSE(const ReadBundle& bundle) {
@@ -257,6 +259,7 @@ void TextOcc::generateSAMUnpaired(ReadBundle& bundle, uint32_t nHits,
                     distance,                     // alignment score
                     distance                      // distance to reference
         );
+    appendOriginAlternates();
 }
 
 // ============================================================================
