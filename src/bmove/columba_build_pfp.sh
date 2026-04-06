@@ -28,12 +28,15 @@ seedLength=100
 ws=0
 mod=0
 haplotype="1"
+max_samples=""
+samples_file=""
+name_prefix=""
 vcf_file=""
 fasta_files=()
 keep_intermediates=0
 
 showUsage() {
-    echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_file.fa.gz>] [-V <vcf_file>] [-H <haplotype>] [-k]"
+    echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_file.fa.gz>] [-V <vcf_file>] [-H <haplotype>] [-M <max_samples>] [-S <samples_file>] [-P <name_prefix>] [-k]"
     echo
     echo "Required arguments:"
     echo "  -r <index_name>       Name/location of the index to be created."
@@ -43,7 +46,10 @@ showUsage() {
     echo "  -F <fasta_file_list>  Path to a file containing a list of FASTA files."
     echo "  -V <vcf_file>         VCF file (bgzipped and indexed) to apply to the reference."
     echo "  -H <haplotype>        Haplotype to extract from VCF (default: $haplotype)."
-    echo "  -l <seedLength>       Seed length placeholder (currently unused, default: $seedLength)."
+    echo "  -M <max_samples>      Maximum number of VCF samples to parse."
+    echo "  -S <samples_file>     File containing VCF sample IDs to parse."
+    echo "  -P <name_prefix>      Prefix added to generated haplotype sequence names."
+    echo "  -l <seedLength>       Seed length for Columba-compatible non-ACGT replacement (default: $seedLength)."
     echo "  -w <ws>               Window size for PFP / Big-BWT."
     echo "  -p <mod>              Mod value for PFP / Big-BWT."
     echo "  -k                    Keep PFP and Big-BWT intermediate artifacts after success."
@@ -187,7 +193,7 @@ installBigBWTOutputs() {
     mv "${bbwt_prefix}.esa" "${target_prefix}.esa"
 }
 
-while getopts ":l:r:f:F:w:p:V:H:k" opt; do
+while getopts ":l:r:f:F:w:p:V:H:M:S:P:k" opt; do
     case $opt in
         l) seedLength=$OPTARG ;;
         r) index_name=$OPTARG ;;
@@ -212,6 +218,9 @@ while getopts ":l:r:f:F:w:p:V:H:k" opt; do
             ;;
         V) vcf_file=$OPTARG ;;
         H) haplotype=$OPTARG ;;
+        M) max_samples=$OPTARG ;;
+        S) samples_file=$OPTARG ;;
+        P) name_prefix=$OPTARG ;;
         w) ws=$OPTARG ;;
         p) mod=$OPTARG ;;
         k) keep_intermediates=1 ;;
@@ -244,6 +253,19 @@ requireFile "$ref_archive"
 if [[ -n "$vcf_file" ]]; then
     requireFile "$vcf_file"
 fi
+if [[ -n "$samples_file" ]]; then
+    requireFile "$samples_file"
+fi
+if [[ -n "$max_samples" ]]; then
+    if ! [[ "$max_samples" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: -M <max_samples> must be a positive integer." >&2
+        exit 1
+    fi
+fi
+if ! [[ "$seedLength" =~ ^[0-9]+$ ]]; then
+    echo "Error: -l <seedLength> must be a non-negative integer." >&2
+    exit 1
+fi
 
 w_val="${ws:-10}"
 p_val="${mod:-100}"
@@ -261,9 +283,18 @@ echo "Repository directory: $repo_dir"
 echo "Output base: $base"
 
 echo "Start Bidirectional Prefix-Free Parsing via pfp++..."
-pfp_cmd=("$pfp64_exe" -w "$w_val" -p "$p_val" -o "$base" -c -i -l --acgt-only -r "$ref_archive")
+pfp_cmd=("$pfp64_exe" -w "$w_val" -p "$p_val" -o "$base" -c -i -l --acgt-only --seed-length "$seedLength" -r "$ref_archive")
 if [[ -n "$vcf_file" ]]; then
     pfp_cmd+=(-v "$vcf_file" -H "$haplotype")
+    if [[ -n "$max_samples" ]]; then
+        pfp_cmd+=(-m "$max_samples")
+    fi
+    if [[ -n "$samples_file" ]]; then
+        pfp_cmd+=(-S "$samples_file")
+    fi
+    if [[ -n "$name_prefix" ]]; then
+        pfp_cmd+=(-P "$name_prefix")
+    fi
 fi
 runCommandWithTime "${pfp_cmd[@]}"
 requireArtifacts "forward PFP" \

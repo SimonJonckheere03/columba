@@ -2,178 +2,228 @@
 
 ## Overview
 
-The current Columba PFP build has two separate text representations:
+The current Columba PFP build uses two different concerns:
 
-- `pfp_pos`: the full forward or reverse PFP text, including structural sentinel bytes.
-- `bbwt_pos`: the stripped Big-BWT payload text, containing only biological characters.
+- PFP remains the build mechanism that produces the phrase parse and the
+  Big-BWT payload text.
+- Runtime liftover is now defined directly on the plain searchable payload
+  sequences, not on the internal sentinel-padded PFP text.
 
-The forward PFP coordinate space is the source of truth for:
+That means the runtime coordinate system is the concatenation of plain
+per-sequence payload strings:
 
-- forward `.parse`, `.dict`, `.last`, `.sai`, `.occ`
-- forward `.lidx`
-- forward `.ldx`
+```text
+forward_payload = seq0 || seq1 || seq2 || ...
+```
 
-The Big-BWT-facing payloads are derived views:
+Columba still requires both:
 
-- `<base>.bbwt`
-- `<base>.rev.bbwt`
+- the forward BWT built on `forward_payload`
+- the reverse BWT built on `reverse_payload = reverse(forward_payload)`
 
-These payloads are built by removing structural PFP sentinels from the fully materialized forward and reverse texts. Big-BWT indexes the payloads, not the sentinel-rich PFP texts.
+## Runtime Coordinate Space
 
-## Coordinate Spaces
+Runtime alignment now operates only in payload-space.
 
-### `pfp_pos`
+### Payload-space sequence inventory
 
-`pfp_pos` is the coordinate system of the exact materialized PFP text. It includes:
+The searchable payload is represented as a concatenation of named sequences.
+Those sequence boundaries are described by:
 
-- `DOLLAR` (`0x02`)
-- `DOLLAR_SEQUENCE` (`0x04`)
-- `DOLLAR_PRIME` (`0x05`)
+- `<base>.pos`
+- `<base>.sna`
+- `<base>.fsid`
+- `<base>.headerSN.bin`
 
-This is the space used by the forward `.lidx` and `.ldx` outputs.
+Columba already uses these files in the plain multi-FASTA build, so the PFP
+build now reuses the same mechanism.
 
-### `bbwt_pos`
+### `.pos`
 
-`bbwt_pos` is the coordinate system of the stripped payload passed to Big-BWT. It excludes all structural sentinels and contains only biological characters after current preprocessing rules.
+Binary array of sequence start offsets in the forward payload concatenation.
 
-### Mapping
+If the payload is:
 
-Each payload has a matching packed keep-bitvector:
+```text
+seq0 || seq1 || seq2
+```
 
-- `<base>.bbwt.map`
-- `<base>.rev.bbwt.map`
+then `.pos` stores:
 
-File format:
+```text
+[0, len(seq0), len(seq0)+len(seq1), len(seq0)+len(seq1)+len(seq2)]
+```
 
-1. `uint64_t full_pfp_length`
-2. `uint64_t kept_count`
-3. packed bitvector bytes over `full_pfp_length`
+At runtime, Columba uses `.pos` to decide:
 
-Bit meaning:
+- which payload sequence contains a hit
+- whether a hit crosses a sequence boundary
+- the sequence-relative offset of an accepted hit
 
-- `1`: the character at that `pfp_pos` was kept in the Big-BWT payload
-- `0`: the character was dropped because it is a structural sentinel
+### `.sna`
 
-Expected load-time operations:
+Length-prefixed sequence names in the same order as `.pos`.
 
-- `bbwt_pos -> pfp_pos`: `select1(bbwt_pos + 1)`
-- `pfp_pos -> bbwt_pos`: `rank1(pfp_pos + 1) - 1` if the bit is `1`
+### `.fsid`
 
-Boundary validation rule:
+The first sequence ID per logical source file/group.
 
-- map the start and end of an interval back to `pfp_pos`
-- reject the interval if the mapped span is longer than the payload interval
-- this detects removed sentinel bytes inside the candidate interval
+For the current PFP-driven build this is written as one logical group, so the
+runtime file contains a single value `0`.
+
+### `.headerSN.bin`
+
+The SAM `@SQ` header lines for the primary reporting coordinate system.
+
+Because single-end liftover reports primary alignments in lifted reference
+space, `.headerSN.bin` contains the lifted reference contig names and lifted
+reference lengths, not the haplotype names.
+
+## Liftover Files
+
+### `.lidx`
+
+`.lidx` is now a payload-space sequence manifest.
+
+It stores:
+
+- one entry per payload sequence
+- the payload sequence name
+- the payload sequence length
+
+The order matches:
+
+- `.pos`
+- `.sna`
+- `.ldx`
+- the forward payload concatenation
+
+### `.ldx`
+
+`.ldx` is now payload-space LevioSAM metadata.
+
+It stores:
+
+- the payload-space sequence-start structure
+- the payload-space sequence names
+- the number of reference contigs
+- one LevioSAM `lift::Lift` per payload sequence
+- one reference-payload offset per payload sequence
+
+For each payload sequence:
+
+- reference sequences get an identity lift
+- haplotype sequences get a LevioSAM lift built from the selected VCF alleles
+
+Each lift maps:
+
+```text
+sequence-relative payload offset -> sequence-relative reference offset
+```
+
+The stored offset then converts that lifted coordinate into the global lifted
+reference concatenation.
+
+### `.bbwt.map`
+
+`.bbwt.map` and `.rev.bbwt.map` may still be emitted as debugging sidecars by
+the PFP build, but they are no longer a runtime dependency.
+
+Columba does not load them in the payload-space redesign.
 
 ## Artifact Table
 
 | Artifact | Producer | Coordinate space | Purpose | Current consumer |
 | --- | --- | --- | --- | --- |
-| `<base>.parse` | `pfp++64` | `pfp_pos` | Forward phrase sequence | Debug/parity only |
-| `<base>.dict` | `pfp++64` | `pfp_pos` phrases | Forward phrase dictionary | Debug/parity only |
-| `<base>.last` / `<base>.sai` / `<base>.occ` | `pfp++64` | `pfp_pos` parse stream | Forward PFP metadata | Debug/parity only |
-| `<base>.rev.parse` / `.rev.dict` / `.rev.last` / `.rev.sai` / `.rev.occ` | `pfp++64` | reverse `pfp_pos` | Reverse internal/debug PFP artifacts | Debug only |
-| `<base>.lidx` | `pfp++64` | forward `pfp_pos` | Sequence index lengths/names | Future alignment/liftover |
-| `<base>.ldx` | `pfp++64` | forward `pfp_pos` | Lift index | Future alignment/liftover |
-| `<base>.bbwt` | `pfp++64` | `bbwt_pos` | Forward stripped payload for Big-BWT | Big-BWT |
-| `<base>.bbwt.map` | `pfp++64` | `pfp_pos` bitvector | Forward `bbwt_pos -> pfp_pos` transform | Future alignment/liftover |
-| `<base>.rev.bbwt` | `pfp++64` | reverse `bbwt_pos` | Reverse stripped payload for Big-BWT | Big-BWT |
-| `<base>.rev.bbwt.map` | `pfp++64` | reverse `pfp_pos` bitvector | Reverse `bbwt_pos -> pfp_pos` transform | Future alignment/liftover |
-| `<base>.pos` / `.sna` / `.fsid` / `.headerSN.bin` | `columba_build_pfp.sh` | `bbwt_pos` | Runtime sequence names, starts, file grouping, and SAM header lines derived from `.lidx` + `.bbwt.map` | Columba runtime |
-| `<base>.bbwt.parse` / `.dict` / `.last` / `.sai` / `.occ` | `newscanNT.x` | `bbwt_pos` | Forward Big-BWT parser artifacts | `bwtparse64`, `pfbwtNT64.x` |
-| `<base>.rev.bbwt.parse` / `.dict` / `.last` / `.sai` / `.occ` | `newscanNT.x` | reverse `bbwt_pos` | Reverse Big-BWT parser artifacts | `bwtparse64`, `pfbwtNT64.x` |
-| `<base>.bwt` / `.ssa` / `.esa` | Big-BWT handoff | `bbwt_pos` | Final forward BWT and SA samples | `columba_build --pfp` |
-| `<base>.rev.bwt` / `.rev.ssa` / `.rev.esa` | Big-BWT handoff | reverse `bbwt_pos` | Final reverse BWT and SA samples | `columba_build --pfp` |
+| `<base>.parse` / `.dict` / `.last` / `.sai` / `.occ` | `pfp++64` | internal PFP text | Forward PFP artifacts | Debug / parity |
+| `<base>.rev.parse` / `.rev.dict` / `.rev.last` / `.rev.sai` / `.rev.occ` | `pfp++64` | internal reverse PFP text | Reverse internal/debug PFP artifacts | Debug |
+| `<base>.lidx` | `pfp++64` | payload-space | Payload sequence manifest | Columba runtime |
+| `<base>.ldx` | `pfp++64` | payload-space | Payload-space LevioSAM lifts | Columba runtime |
+| `<base>.bbwt` | `pfp++64` | payload-space | Forward Big-BWT payload text | Big-BWT |
+| `<base>.rev.bbwt` | `pfp++64` | reverse payload-space | Reverse Big-BWT payload text | Big-BWT |
+| `<base>.pos` / `.sna` / `.fsid` | `columba_build_pfp.sh` | payload-space | Runtime sequence boundaries and names | Columba runtime |
+| `<base>.headerSN.bin` | `columba_build_pfp.sh` | lifted reference space | SAM header lines | Columba runtime |
+| `<base>.bbwt.parse` / `.dict` / `.last` / `.sai` / `.occ` | `newscanNT.x` | payload-space | Forward Big-BWT parser artifacts | `bwtparse64`, `pfbwtNT64.x` |
+| `<base>.rev.bbwt.parse` / `.dict` / `.last` / `.sai` / `.occ` | `newscanNT.x` | reverse payload-space | Reverse Big-BWT parser artifacts | `bwtparse64`, `pfbwtNT64.x` |
+| `<base>.bwt` / `.ssa` / `.esa` | Big-BWT handoff | payload-space | Final forward BWT and SA samples | `columba_build --pfp` |
+| `<base>.rev.bwt` / `.rev.ssa` / `.rev.esa` | Big-BWT handoff | reverse payload-space | Final reverse BWT and SA samples | `columba_build --pfp` |
 | `<base>.cct`, `.smpf`, `.smpl`, `.ftr`, `.ltr`, `.rev.smpf`, `.rev.smpl` | `columba_build --pfp` | derived from final BWTs | Columba runtime index data | Columba runtime |
 
-## Liftover Semantics
+## Build Pipeline
 
-The forward liftover structures remain sentinel-aware and unchanged.
+1. `pfp++64` reads the reference FASTA and VCF, materializes the payload
+   sequences, builds the forward PFP artifacts, and writes payload-space
+   `.lidx` / `.ldx`.
+2. `pfp++64` also writes:
+   - `<base>.bbwt`
+   - `<base>.rev.bbwt`
+3. `columba_build_pfp.sh` writes:
+   - `.pos`
+   - `.sna`
+   - `.fsid`
+   - `.headerSN.bin`
+   directly from the payload-space sequence inventory and the reference FASTA.
+4. `newscanNT.x`, `bwtparse64`, and `pfbwtNT64.x` build the forward BWT from
+   `<base>.bbwt`.
+5. The same tools build the reverse BWT from `<base>.rev.bbwt`.
+6. `columba_build --pfp` builds the Columba runtime structures from the final
+   forward and reverse BWTs.
 
-### `.lidx`
+## Runtime Single-End Liftover
 
-`.lidx` stores contig names and contig lengths in the forward PFP coordinate system. The reported lengths include the PFP tail convention used during forward parsing.
+For each accepted single-end hit:
 
-### `.ldx`
+1. search returns a hit in forward payload coordinates
+2. Columba uses `.pos` to assign the hit to one payload sequence
+3. if the hit crosses a payload-sequence boundary, Columba rejects it
+4. Columba converts the hit to a sequence-relative payload offset
+5. Columba loads the matching `lift::Lift` from `.ldx`
+6. Columba lifts that payload offset directly into reference space
+7. the primary SAM coordinate is reported in lifted reference space
+8. the payload/haplotype origin is retained in the `XV:Z:` tag
 
-`.ldx` stores the merged LevioSAM lift structures for the forward PFP coordinate system. It is built from the current forward parser path and must not be rewritten to match stripped Big-BWT payload coordinates.
+If multiple haplotype hits lift to the same reference placement:
 
-### Consequence
+- one lifted primary alignment is kept
+- all distinct origin placements are retained in `XV:Z:`
 
-Any future alignment code that obtains text positions from the final `.bwt` must:
+## Reverse Text Requirement
 
-1. interpret them first as `bbwt_pos`
-2. map them back to `pfp_pos` with `.bbwt.map`
-3. only then apply `.lidx` / `.ldx`
+The reverse build is still mandatory.
 
-## Current Build Pipeline
+Once the forward payload string is fixed, the reverse text is simply:
 
-1. `pfp++64` builds forward PFP artifacts, reverse debug artifacts, `.lidx`, `.ldx`, and the stripped `.bbwt` payloads plus `.bbwt.map`.
-2. `columba_build_pfp.sh` derives `.pos`, `.sna`, `.fsid`, and `.headerSN.bin` from `.lidx` plus `.bbwt.map`, so the aligner sees the same sequence metadata contract as in the plain FASTA build.
-3. `newscanNT.x` runs on `<base>.bbwt` and `<base>.rev.bbwt`.
-4. `bwtparse64` and `pfbwtNT64.x` build payload-based Big-BWT outputs.
-5. The final payload-based `.bwt/.ssa/.esa` files are installed to the standard names expected by `columba_build --pfp`.
-6. `columba_build --pfp` builds the Columba runtime structures from the final BWT files.
+```text
+reverse_payload = reverse(forward_payload)
+```
+
+Big-BWT then builds:
+
+- `<base>.rev.bwt`
+- `<base>.rev.ssa`
+- `<base>.rev.esa`
+
+The runtime redesign removes the old payload-to-PFP hop, but it does not
+remove Columba’s need for the reverse searchable index.
 
 ## Move Structure Packing Note
 
-The Columba move structures store one extra sentinel row in both the LF move
-representation and the Phi move representation.
+The Columba move structures store an extra sentinel row and therefore need
+bit widths sized for inclusive boundary values:
 
-That sentinel row stores inclusive boundary values:
+- `textSize + 1`
+- `nrOfRuns + 1`
 
-- `inputStartPos = textSize`
-- `outputStartPos = textSize`
-- `outputStartRun = nrOfRuns`
-
-This means the bit widths in `src/bmove/moverepr.cpp` must be sized for
-`textSize + 1` and `nrOfRuns + 1`, not just for `textSize` and `nrOfRuns`.
-
-The current Columba version carries that fix in:
+That fix remains required in:
 
 - `MoveLFReprBP::initialize/load`
 - `MovePhiReprBP::initialize/load`
 
-Without that fix, power-of-two cases are truncated during packing. For example,
-`textSize = 32` would use only 5 bits and the stored sentinel boundary `32`
-would wrap to `0`. In the PFP build path this caused the last run boundary to
-be lost and later triggered a PLCP select assertion during
-`constructRunLengthEncodedPLCP(...)`.
+Without it, exact power-of-two sizes truncate the sentinel boundary values and
+corrupt the move representation.
 
-This fix is independent of PFP itself, but it is required for the PFP-based
-index build to remain consistent with the Big-BWT-generated `.bwt/.ssa/.esa`
-files.
+## Current Scope
 
-## Downstream Expectations
-
-Current Columba code consumes:
-
-- `.bwt`
-- `.rev.bwt`
-- `.ssa`
-- `.esa`
-- `.rev.ssa`
-- `.rev.esa`
-- `.pos`
-- `.sna`
-- `.fsid`
-- `.headerSN.bin`
-- the derived Columba build outputs such as `.cct`, `.smpf`, `.smpl`, `.ftr`, `.ltr`
-
-Current Columba code does **not** yet load `.lidx` or `.ldx`.
-
-Expected future alignment flow:
-
-1. locate a candidate interval in the forward or reverse BWT
-2. convert the resulting text positions from `bbwt_pos` to `pfp_pos` with `.bbwt.map`
-3. reject intervals whose mapped span crosses removed sentinels
-4. apply sequence-boundary validation in `pfp_pos`
-5. map accepted forward positions through `.ldx`
-
-## Invariants
-
-- Forward `.parse/.dict/.last/.sai/.occ/.lidx/.ldx` remain byte-identical to `moni-align`.
-- `.bbwt` and `.rev.bbwt` contain no structural PFP sentinel bytes.
-- `.bbwt.map` and `.rev.bbwt.map` reconstruct the kept payload positions exactly.
-- Any interval that crosses a removed structural sentinel must be rejected after mapping back to `pfp_pos`.
-- Move-structure sentinel rows must preserve `textSize` and `nrOfRuns` exactly; they may not be truncated during bit packing.
+- Single-end liftover is supported.
+- Paired-end liftover is intentionally unsupported in this version.
+- Runtime does not depend on `.bbwt.map`.
