@@ -57,7 +57,6 @@ void TextOcc::generateSAMSingleEnd(const string& seqID, const string& printSeq,
                                    const string& printQual, length_t nHits,
                                    length_t minScore, bool primaryAlignment,
                                    const vector<string>& seqNames) {
-
     // Estimate the length of the resulting string and reserve memory
     size_t estimated_length =
         seqID.length() + printSeq.length() + printQual.length() + 100;
@@ -68,11 +67,15 @@ void TextOcc::generateSAMSingleEnd(const string& seqID, const string& printSeq,
     uint16_t flags = getFlagsSE(primaryAlignment);
     int16_t mapQ = getMapQ(nHits, minScore);
     length_t pos = range.getBegin() + 1; // SAM is 1-based
+    const length_t samDistance = getSAMDistance();
+    const std::string mdTag = hasLiftedReportedTags()
+                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
+                                  : "";
 
     // Format the output line
     outputLine =
         fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}\tNM:i:{}"
-                    "\tPG:Z:Columba\n",
+                    "{}\tPG:Z:Columba\n",
                     seqID,                        // read name
                     flags,                        // sam flags
                     seqNames[assignedSequenceID], // reference sequence name
@@ -82,7 +85,8 @@ void TextOcc::generateSAMSingleEnd(const string& seqID, const string& printSeq,
                     printSeq,    // sequence or *
                     printQual,   // quality or *
                     distance,    // AS:i: distance
-                    distance     // NM:i: distance
+                    samDistance, // NM:i: distance
+                    mdTag
         );
 }
 
@@ -93,15 +97,27 @@ void TextOcc::generateSAMSingleEndXA(
     std::vector<TextOcc>::const_iterator otherMatchesEnd,
     const std::vector<std::string>& seqNames) {
 
+    for (auto it = otherMatchesBegin; it != otherMatchesEnd; ++it) {
+        originAltTags.insert(originAltTags.end(), it->originAltTags.begin(),
+                             it->originAltTags.end());
+    }
+    deduplicateOriginAltTags();
+
     generateSAMSingleEnd(seqID, printSeq, printQual, nHits, distance, true,
                          seqNames);
     assert(outputLine.back() == '\n'); // generateSAMSingleEnd should add \n
     // remove \n from end of the line
     outputLine.pop_back();
-    // add the X0 X1 and XA tag
-    length_t x0 = nHits - 1; // number of co-optimal hits (nHits includes this)
-    // number of suboptimal hits
-    length_t x1 = std::distance(otherMatchesBegin, otherMatchesEnd) - x0;
+    // Count the alignments actually serialized into XA.
+    length_t x0 = 1; // include this primary alignment
+    length_t x1 = 0;
+    for (auto it = otherMatchesBegin; it != otherMatchesEnd; ++it) {
+        if (it->getDistance() == distance) {
+            ++x0;
+        } else {
+            ++x1;
+        }
+    }
 
     // Append the SAM line
     outputLine += fmt::format("\tX0:i:{}\tX1:i:{}\tXA:Z:", x0, x1);
@@ -141,10 +157,13 @@ void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
     const auto& sign =
         (mateMapped && range.getBegin() > mateOcc.range.getBegin()) ? "-" : "";
     const auto insertSize = (mateMapped) ? fragSize : 0;
+    const std::string mdTag = hasLiftedReportedTags()
+                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
+                                  : "";
 
     outputLine = fmt::format(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}\tAS:i:{}\tNM:i:"
-        "{}\tPG:Z:Columba\n",
+        "{}{}\tPG:Z:Columba\n",
         bundle.getSeqID(), // read name
         flags,             // SAM flags
         assignedSeq,       // reference sequence name
@@ -158,7 +177,8 @@ void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
         printSeq,                                // read sequence
         printQual,                               // read quality
         distance,                                // alignment score of this read
-        distance // distance to reference of this read
+        getSAMDistance(),                        // distance to reference of this read
+        mdTag
     );
     appendOriginAlternates();
 }
@@ -245,9 +265,12 @@ void TextOcc::generateSAMUnpaired(ReadBundle& bundle, uint32_t nHits,
     outputLine.reserve(bundle.getSeqID().length() + bundle.getRead().length() +
                        bundle.getQual().length() +
                        150); // 150 is a rough estimate for the fixed parts
+    const std::string mdTag = hasLiftedReportedTags()
+                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
+                                  : "";
     outputLine =
         fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}\tNM:i:{}"
-                    "\tPG:Z:Columba\n",
+                    "{}\tPG:Z:Columba\n",
                     bundle.getSeqID(),            // read name
                     flags,                        // flags
                     seqNames[assignedSequenceID], // reference sequence name
@@ -257,7 +280,8 @@ void TextOcc::generateSAMUnpaired(ReadBundle& bundle, uint32_t nHits,
                     printSeq,                     // read sequence
                     printQual,                    // read quality
                     distance,                     // alignment score
-                    distance                      // distance to reference
+                    getSAMDistance(),             // distance to reference
+                    mdTag
         );
     appendOriginAlternates();
 }

@@ -19,6 +19,7 @@ fi
 repo_dir=$(cd "${build_dir}/.." && pwd)
 
 columba_build_exe="${build_dir}/bin/columba_build"
+columba_ref_etxt_exe="${build_dir}/bin/columba_ref_etxt"
 pfp64_exe="${build_dir}/bin/pfp++64"
 bwt_newscan_exe="${repo_dir}/external/Big-BWT/newscanNT.x"
 bwtparse64_exe="${repo_dir}/external/Big-BWT/bwtparse64"
@@ -34,9 +35,10 @@ name_prefix=""
 vcf_file=""
 fasta_files=()
 keep_intermediates=0
+log_file=""
 
 showUsage() {
-    echo "Usage: $0 [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_file.fa.gz>] [-V <vcf_file>] [-H <haplotype>] [-M <max_samples>] [-S <samples_file>] [-P <name_prefix>] [-k]"
+    echo "Usage: $0 [--log-file <log_file>] [-l <seedLength>] [-w <ws>] [-p <mod>] -r <index_name> [-f <fasta_file.fa.gz>] [-V <vcf_file>] [-H <haplotype>] [-M <max_samples>] [-S <samples_file>] [-P <name_prefix>] [-k]"
     echo
     echo "Required arguments:"
     echo "  -r <index_name>       Name/location of the index to be created."
@@ -52,17 +54,29 @@ showUsage() {
     echo "  -l <seedLength>       Seed length for Columba-compatible non-ACGT replacement (default: $seedLength)."
     echo "  -w <ws>               Window size for PFP / Big-BWT."
     echo "  -p <mod>              Mod value for PFP / Big-BWT."
+    echo "  -G <log_file>         Write the full wrapper log to the specified file."
+    echo "  --log-file <log_file> Same as -G."
     echo "  -k                    Keep PFP and Big-BWT intermediate artifacts after success."
 }
 
 runCommandWithTime() {
     local command="$1"
     shift
+    printf '+'
+    printf ' %q' "$command" "$@"
+    printf '\n'
     (/usr/bin/time -v "$command" "$@") || {
         local status=$?
         echo "Error: Command '$command $*' failed with exit status $status." >&2
         exit $status
     }
+}
+
+setupLogging() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    exec > >(tee -a "$path") 2>&1
+    echo "Logging to: $path"
 }
 
 requireExecutable() {
@@ -185,6 +199,12 @@ cleanupArtifacts() {
     rm -f "${base}.rev.bbwt" "${base}.rev.bbwt.map" "${base}.rev.bbwt.parse" "${base}.rev.bbwt.dict" "${base}.rev.bbwt.occ" "${base}.rev.bbwt.last" "${base}.rev.bbwt.sai" "${base}.rev.bbwt.ilist" "${base}.rev.bbwt.bwlast" "${base}.rev.bbwt.bwsai" "${base}.rev.bbwt.bwt" "${base}.rev.bbwt.ssa" "${base}.rev.bbwt.esa"
 }
 
+cleanupLegacyArtifacts() {
+    local base="$1"
+    cleanupArtifacts "$base"
+    rm -f "${base}" "${base}.rev"
+}
+
 installBigBWTOutputs() {
     local bbwt_prefix="$1"
     local target_prefix="$2"
@@ -193,8 +213,196 @@ installBigBWTOutputs() {
     mv "${bbwt_prefix}.esa" "${target_prefix}.esa"
 }
 
-while getopts ":l:r:f:F:w:p:V:H:M:S:P:k" opt; do
+warnIfNoVcfOptionsProvided() {
+    local warned=0
+    if [[ "$haplotype" != "1" ]]; then
+        warned=1
+    fi
+    if [[ -n "$max_samples" || -n "$samples_file" || -n "$name_prefix" ]]; then
+        warned=1
+    fi
+
+    if [[ "$warned" -eq 1 ]]; then
+        echo "Warning: Ignoring VCF-specific options (-H/-M/-S/-P) because no VCF was provided."
+    fi
+}
+
+runPayloadBigBWTPipeline() {
+    local base="$1"
+    local parser_mod="$2"
+
+    echo "Running Big-BWT on FORWARD payload..."
+    runCommandWithTime "$bwt_newscan_exe" "${base}.bbwt" -w "$w_val" -p "$parser_mod" -s
+    requireArtifacts "forward payload parser" \
+        "${base}.bbwt.parse" "${base}.bbwt.dict" "${base}.bbwt.last" "${base}.bbwt.sai" "${base}.bbwt.occ"
+    runCommandWithTime "$bwtparse64_exe" "${base}.bbwt" -s
+    requireArtifacts "forward payload bwtparse" \
+        "${base}.bbwt.ilist" "${base}.bbwt.bwlast" "${base}.bbwt.bwsai"
+    runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.bbwt"
+    requireArtifacts "forward payload Big-BWT" \
+        "${base}.bbwt.bwt" "${base}.bbwt.ssa" "${base}.bbwt.esa"
+    installBigBWTOutputs "${base}.bbwt" "$base"
+    requireArtifacts "forward installed Big-BWT" \
+        "${base}.bwt" "${base}.ssa" "${base}.esa"
+
+    echo "Running Big-BWT on REVERSE payload..."
+    runCommandWithTime "$bwt_newscan_exe" "${base}.rev.bbwt" -w "$w_val" -p "$parser_mod" -s
+    requireArtifacts "reverse payload parser" \
+        "${base}.rev.bbwt.parse" "${base}.rev.bbwt.dict" "${base}.rev.bbwt.last" "${base}.rev.bbwt.sai" "${base}.rev.bbwt.occ"
+    runCommandWithTime "$bwtparse64_exe" "${base}.rev.bbwt" -s
+    requireArtifacts "reverse payload bwtparse" \
+        "${base}.rev.bbwt.ilist" "${base}.rev.bbwt.bwlast" "${base}.rev.bbwt.bwsai"
+    runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.rev.bbwt"
+    requireArtifacts "reverse payload Big-BWT" \
+        "${base}.rev.bbwt.bwt" "${base}.rev.bbwt.ssa" "${base}.rev.bbwt.esa"
+    installBigBWTOutputs "${base}.rev.bbwt" "${base}.rev"
+    requireArtifacts "reverse installed Big-BWT" \
+        "${base}.rev.bwt" "${base}.rev.ssa" "${base}.rev.esa"
+    echo "Big-BWT generation complete."
+    echo "-------------------------------------------------------------"
+}
+
+runPfpPostprocessingPipeline() {
+    local base="$1"
+    local ref_archive="$2"
+    local parser_mod="$3"
+
+    requireArtifacts "forward PFP" \
+        "${base}.parse" "${base}.dict" "${base}.last" "${base}.sai" "${base}.occ" "${base}.lidx" "${base}.ldx"
+    requireArtifacts "Big-BWT payloads" \
+        "${base}.bbwt" "${base}.rev.bbwt"
+    writeSequenceMetadataFromPFP "$base" "$ref_archive"
+    requireArtifacts "sequence metadata" \
+        "${base}.headerSN.bin" "${base}.pos" "${base}.sna" "${base}.fsid"
+
+    echo "Writing encoded reference-prefix slices..."
+    runCommandWithTime "$columba_ref_etxt_exe" "$ref_archive" "${base}.ref.etxt" "$seedLength"
+    requireArtifacts "reference-prefix slices" \
+        "${base}.ref.etxt"
+    echo "Prefix-free parsing done."
+    echo "-------------------------------------------------------------"
+
+    runPayloadBigBWTPipeline "$base" "$parser_mod"
+}
+
+runPfpVcfPipeline() {
+    local base="$1"
+    local ref_archive="$2"
+
+    requireExecutable "$columba_ref_etxt_exe"
+    requireExecutable "$pfp64_exe"
+    requireExecutable "$bwt_newscan_exe"
+    requireExecutable "$bwtparse64_exe"
+    requireExecutable "$pfbwtNT64_exe"
+
+    w_val="${ws:-10}"
+    p_val="${mod:-100}"
+    if [[ "$w_val" -eq 0 ]]; then w_val=10; fi
+    if [[ "$p_val" -eq 0 ]]; then p_val=100; fi
+    if [[ "$w_val" -lt 4 ]]; then
+        echo "Error: Big-BWT requires a window size of at least 4." >&2
+        exit 1
+    fi
+
+    echo "Start Bidirectional Prefix-Free Parsing via pfp++ (VCF-aware mode)..."
+    pfp_cmd=("$pfp64_exe" -w "$w_val" -p "$p_val" -o "$base" -c -i -l --acgt-only --seed-length "$seedLength" -r "$ref_archive" -v "$vcf_file" -H "$haplotype")
+    if [[ -n "$max_samples" ]]; then
+        pfp_cmd+=(-m "$max_samples")
+    fi
+    if [[ -n "$samples_file" ]]; then
+        pfp_cmd+=(-S "$samples_file")
+    fi
+    if [[ -n "$name_prefix" ]]; then
+        pfp_cmd+=(-P "$name_prefix")
+    fi
+    runCommandWithTime "${pfp_cmd[@]}"
+
+    local parser_mod="$p_val"
+    if [[ "$parser_mod" -lt 10 ]]; then parser_mod=10; fi
+    runPfpPostprocessingPipeline "$base" "$ref_archive" "$parser_mod"
+}
+
+runLegacyFastaPipeline() {
+    local base="$1"
+
+    requireExecutable "$bwt_newscan_exe"
+    requireExecutable "$bwtparse64_exe"
+    requireExecutable "$pfbwtNT64_exe"
+
+    warnIfNoVcfOptionsProvided
+
+    echo "Start preprocessing the fasta file(s) with Columba..."
+    runCommandWithTime "$columba_build_exe" --preprocess -l "$seedLength" -r "$index_name" -f "${fasta_files[@]}"
+    requireArtifacts "preprocessed reference metadata" \
+        "${base}.headerSN.bin" "${base}.pos" "${base}.sna" "${base}.fsid"
+    requireArtifacts "preprocessed texts" \
+        "${base}" "${base}.rev"
+    echo "Preprocessing done!"
+    echo "-------------------------------------------------------------"
+
+    w_val="${ws:-10}"
+    p_val="${mod:-100}"
+    if [[ "$w_val" -eq 0 ]]; then w_val=10; fi
+    if [[ "$p_val" -eq 0 ]]; then p_val=100; fi
+    if [[ "$w_val" -lt 4 ]]; then
+        echo "Error: Big-BWT requires a window size of at least 4." >&2
+        exit 1
+    fi
+
+    echo "Start prefix-free parsing for the original string..."
+    runCommandWithTime "$bwt_newscan_exe" "$base" -w "$w_val" -p "$p_val" -s
+    requireArtifacts "forward parser" \
+        "${base}.parse" "${base}.dict" "${base}.last" "${base}.sai" "${base}.occ"
+    runCommandWithTime "$bwtparse64_exe" "$base" -s
+    requireArtifacts "forward bwtparse" \
+        "${base}.ilist" "${base}.bwlast" "${base}.bwsai"
+    runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "$base"
+    requireArtifacts "forward Big-BWT" \
+        "${base}.bwt" "${base}.ssa" "${base}.esa"
+    echo "Prefix-free parsing done!"
+    echo "-------------------------------------------------------------"
+
+    echo "Start prefix-free parsing for the reverse string..."
+    runCommandWithTime "$bwt_newscan_exe" "${base}.rev" -w "$w_val" -p "$p_val" -s
+    requireArtifacts "reverse parser" \
+        "${base}.rev.parse" "${base}.rev.dict" "${base}.rev.last" "${base}.rev.sai" "${base}.rev.occ"
+    runCommandWithTime "$bwtparse64_exe" "${base}.rev" -s
+    requireArtifacts "reverse bwtparse" \
+        "${base}.rev.ilist" "${base}.rev.bwlast" "${base}.rev.bwsai"
+    runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.rev"
+    requireArtifacts "reverse Big-BWT" \
+        "${base}.rev.bwt" "${base}.rev.ssa" "${base}.rev.esa"
+    echo "Prefix-free parsing done!"
+    echo "-------------------------------------------------------------"
+}
+
+normalized_args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --log-file)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --log-file requires an argument." >&2
+                showUsage
+                exit 1
+            fi
+            normalized_args+=("-G" "$2")
+            shift 2
+            ;;
+        --log-file=*)
+            normalized_args+=("-G" "${1#*=}")
+            shift
+            ;;
+        *)
+            normalized_args+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${normalized_args[@]}"
+
+while getopts ":G:l:r:f:F:w:p:V:H:M:S:P:k" opt; do
     case $opt in
+        G) log_file=$OPTARG ;;
         l) seedLength=$OPTARG ;;
         r) index_name=$OPTARG ;;
         f)
@@ -235,21 +443,16 @@ if [[ -z "${index_name:-}" || ${#fasta_files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-if [[ ${#fasta_files[@]} -ne 1 ]]; then
-    echo "Error: This script currently supports exactly one FASTA archive." >&2
-    exit 1
+base="${index_name}"
+mkdir -p "$(dirname "$base")"
+if [[ -n "$log_file" ]]; then
+    setupLogging "$log_file"
 fi
 
-base="${index_name}"
-ref_archive="${fasta_files[0]}"
-mkdir -p "$(dirname "$base")"
-
 requireExecutable "$columba_build_exe"
-requireExecutable "$pfp64_exe"
-requireExecutable "$bwt_newscan_exe"
-requireExecutable "$bwtparse64_exe"
-requireExecutable "$pfbwtNT64_exe"
-requireFile "$ref_archive"
+for fasta_file in "${fasta_files[@]}"; do
+    requireFile "$fasta_file"
+done
 if [[ -n "$vcf_file" ]]; then
     requireFile "$vcf_file"
 fi
@@ -267,78 +470,25 @@ if ! [[ "$seedLength" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-w_val="${ws:-10}"
-p_val="${mod:-100}"
-if [[ "$w_val" -eq 0 ]]; then w_val=10; fi
-if [[ "$p_val" -eq 0 ]]; then p_val=100; fi
-if [[ "$w_val" -lt 4 ]]; then
-    echo "Error: Big-BWT requires a window size of at least 4." >&2
-    exit 1
-fi
-
 echo "Welcome to the Columba build process with bidirectional prefix-free parsing!"
 echo "-------------------------------------------------------------"
 echo "Build directory: $build_dir"
 echo "Repository directory: $repo_dir"
 echo "Output base: $base"
 
-echo "Start Bidirectional Prefix-Free Parsing via pfp++..."
-pfp_cmd=("$pfp64_exe" -w "$w_val" -p "$p_val" -o "$base" -c -i -l --acgt-only --seed-length "$seedLength" -r "$ref_archive")
+used_legacy_pipeline=0
 if [[ -n "$vcf_file" ]]; then
-    pfp_cmd+=(-v "$vcf_file" -H "$haplotype")
-    if [[ -n "$max_samples" ]]; then
-        pfp_cmd+=(-m "$max_samples")
+    if [[ ${#fasta_files[@]} -ne 1 ]]; then
+        echo "Error: The VCF-aware pfp++ workflow currently requires exactly one FASTA archive." >&2
+        exit 1
     fi
-    if [[ -n "$samples_file" ]]; then
-        pfp_cmd+=(-S "$samples_file")
-    fi
-    if [[ -n "$name_prefix" ]]; then
-        pfp_cmd+=(-P "$name_prefix")
-    fi
+    ref_archive="${fasta_files[0]}"
+    runPfpVcfPipeline "$base" "$ref_archive"
+else
+    used_legacy_pipeline=1
+    echo "No VCF provided; falling back to the original Columba FASTA preprocessing workflow."
+    runLegacyFastaPipeline "$base"
 fi
-runCommandWithTime "${pfp_cmd[@]}"
-requireArtifacts "forward PFP" \
-    "${base}.parse" "${base}.dict" "${base}.last" "${base}.sai" "${base}.occ" "${base}.lidx" "${base}.ldx"
-requireArtifacts "Big-BWT payloads" \
-    "${base}.bbwt" "${base}.rev.bbwt"
-writeSequenceMetadataFromPFP "$base" "$ref_archive"
-requireArtifacts "sequence metadata" \
-    "${base}.headerSN.bin" "${base}.pos" "${base}.sna" "${base}.fsid"
-echo "Prefix-free parsing done."
-echo "-------------------------------------------------------------"
-
-parser_mod="$p_val"
-if [[ "$parser_mod" -lt 10 ]]; then parser_mod=10; fi
-
-echo "Running Big-BWT on FORWARD payload..."
-runCommandWithTime "$bwt_newscan_exe" "${base}.bbwt" -w "$w_val" -p "$parser_mod" -s
-requireArtifacts "forward payload parser" \
-    "${base}.bbwt.parse" "${base}.bbwt.dict" "${base}.bbwt.last" "${base}.bbwt.sai" "${base}.bbwt.occ"
-runCommandWithTime "$bwtparse64_exe" "${base}.bbwt" -s
-requireArtifacts "forward payload bwtparse" \
-    "${base}.bbwt.ilist" "${base}.bbwt.bwlast" "${base}.bbwt.bwsai"
-runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.bbwt"
-requireArtifacts "forward payload Big-BWT" \
-    "${base}.bbwt.bwt" "${base}.bbwt.ssa" "${base}.bbwt.esa"
-installBigBWTOutputs "${base}.bbwt" "$base"
-requireArtifacts "forward installed Big-BWT" \
-    "${base}.bwt" "${base}.ssa" "${base}.esa"
-
-echo "Running Big-BWT on REVERSE payload..."
-runCommandWithTime "$bwt_newscan_exe" "${base}.rev.bbwt" -w "$w_val" -p "$parser_mod" -s
-requireArtifacts "reverse payload parser" \
-    "${base}.rev.bbwt.parse" "${base}.rev.bbwt.dict" "${base}.rev.bbwt.last" "${base}.rev.bbwt.sai" "${base}.rev.bbwt.occ"
-runCommandWithTime "$bwtparse64_exe" "${base}.rev.bbwt" -s
-requireArtifacts "reverse payload bwtparse" \
-    "${base}.rev.bbwt.ilist" "${base}.rev.bbwt.bwlast" "${base}.rev.bbwt.bwsai"
-runCommandWithTime "$pfbwtNT64_exe" -w "$w_val" -s -e "${base}.rev.bbwt"
-requireArtifacts "reverse payload Big-BWT" \
-    "${base}.rev.bbwt.bwt" "${base}.rev.bbwt.ssa" "${base}.rev.bbwt.esa"
-installBigBWTOutputs "${base}.rev.bbwt" "${base}.rev"
-requireArtifacts "reverse installed Big-BWT" \
-    "${base}.rev.bwt" "${base}.rev.ssa" "${base}.rev.esa"
-echo "Big-BWT generation complete."
-echo "-------------------------------------------------------------"
 
 echo "Start building the Columba index..."
 runCommandWithTime "$columba_build_exe" --pfp -r "$index_name"
@@ -346,10 +496,18 @@ echo "Columba index built!"
 echo "-------------------------------------------------------------"
 
 if [[ "$keep_intermediates" -eq 1 ]]; then
-    echo "Keeping intermediate PFP and Big-BWT artifacts."
+    if [[ "$used_legacy_pipeline" -eq 1 ]]; then
+        echo "Keeping intermediate preprocessing and Big-BWT artifacts."
+    else
+        echo "Keeping intermediate PFP and Big-BWT artifacts."
+    fi
 else
     echo "Cleaning up temporary files..."
-    cleanupArtifacts "$base"
+    if [[ "$used_legacy_pipeline" -eq 1 ]]; then
+        cleanupLegacyArtifacts "$base"
+    else
+        cleanupArtifacts "$base"
+    fi
     echo "Temporary files removed!"
 fi
 

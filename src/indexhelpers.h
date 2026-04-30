@@ -290,6 +290,9 @@ class TextOcc {
   private:
     Range range;       // the range in the text
     length_t distance; // the distance to this range (edit or hamming)
+    length_t reportedNM = 0;
+    std::string reportedMD = "";
+    bool hasReportedTags = false;
 
     std::string stringCIGAR = ""; // Start with the empty string
     std::string originCIGAR = "";
@@ -424,7 +427,7 @@ class TextOcc {
         char sign = (isRevCompl()) ? '-' : '+';
         return fmt::format("{},{}{},{},{};", seqNames[assignedSequenceID], sign,
                            range.getBegin() + 1, // SAM is 1-based
-                           stringCIGAR, distance);
+                           stringCIGAR, getSAMDistance());
     }
 
     void appendOriginAlternates() {
@@ -477,6 +480,9 @@ class TextOcc {
 
     TextOcc(TextOcc&& other) noexcept
         : range(std::move(other.range)), distance(other.distance),
+          reportedNM(other.reportedNM),
+          reportedMD(std::move(other.reportedMD)),
+          hasReportedTags(other.hasReportedTags),
           stringCIGAR(std::move(other.stringCIGAR)),
           originCIGAR(std::move(other.originCIGAR)),
           assignedSequenceID(other.assignedSequenceID),
@@ -502,6 +508,9 @@ class TextOcc {
     // make explicit copy constructor
     TextOcc copy() const {
         TextOcc copy(range, distance, stringCIGAR, strand, pairStatus);
+        copy.reportedNM = reportedNM;
+        copy.reportedMD = reportedMD;
+        copy.hasReportedTags = hasReportedTags;
         copy.originCIGAR = originCIGAR;
         copy.assignedSequenceID = assignedSequenceID;
         copy.originSequenceID = originSequenceID;
@@ -527,6 +536,9 @@ class TextOcc {
         if (this != &other) {
             range = std::move(other.range);
             distance = other.distance;
+            reportedNM = other.reportedNM;
+            reportedMD = std::move(other.reportedMD);
+            hasReportedTags = other.hasReportedTags;
             stringCIGAR = std::move(other.stringCIGAR);
             originCIGAR = std::move(other.originCIGAR);
             assignedSequenceID = other.assignedSequenceID;
@@ -776,6 +788,34 @@ class TextOcc {
         this->distance = distance;
     }
 
+    void setReportedTags(length_t nm, const std::string& md) {
+        reportedNM = nm;
+        reportedMD = md;
+        hasReportedTags = true;
+    }
+
+    void clearReportedTags() {
+        reportedNM = 0;
+        reportedMD.clear();
+        hasReportedTags = false;
+    }
+
+    bool hasLiftedReportedTags() const {
+        return hasReportedTags;
+    }
+
+    length_t getReportedNM() const {
+        return reportedNM;
+    }
+
+    const std::string& getReportedMD() const {
+        return reportedMD;
+    }
+
+    length_t getSAMDistance() const {
+        return hasReportedTags ? reportedNM : distance;
+    }
+
     void setPairStatus(PairStatus pairStatus) {
         this->pairStatus = pairStatus;
     }
@@ -1019,6 +1059,7 @@ class TextOcc {
     void dropFields() {
         // we no longer need most fields so we can drop those we do not need
         stringCIGAR.clear();
+        reportedMD.clear();
     }
 
     void setIndexBegin(length_t indexBegin) {

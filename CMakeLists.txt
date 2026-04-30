@@ -199,6 +199,7 @@ endif()
 
 add_executable(columba src/parallel.cpp src/fastq.cpp src/seqfile.cpp src/util.cpp)
 target_link_libraries(columba AuxiliaryClasses)
+add_executable(columba_ref_etxt src/build_ref_etxt.cpp src/seqfile.cpp)
 
 if(RUN_LENGTH_COMPRESSION)
     add_executable(columba_build src/logger.cpp src/buildindex.cpp src/bmove/moverepr.cpp src/parameters/buildparameters.cpp src/seqfile.cpp src/util.cpp)
@@ -347,6 +348,7 @@ if(ZLIB_FOUND)
     include_directories(${ZLIB_INCLUDE_DIR})
     target_link_libraries(columba ${ZLIB_LIBRARY})
     target_link_libraries(columba_build ${ZLIB_LIBRARY})
+    target_link_libraries(columba_ref_etxt ${ZLIB_LIBRARY})
 endif()
 
 # Link Threads package
@@ -600,6 +602,7 @@ if(EXISTS "${LEVIOSAM_SOURCE_DIR}/CMakeLists.txt")
 
             -DHTS_LIB=${HTS_LIB}
             -DSDSL_LIB=${MY_SDSL_LIB}
+            -DBUILD_TESTS=OFF
 
         INSTALL_COMMAND make install
     )
@@ -618,7 +621,7 @@ endif()
 # ---- Installation ----
 
 # Install targets to the bin directory
-install(TARGETS columba columba_build DESTINATION bin)
+install(TARGETS columba columba_build columba_ref_etxt DESTINATION bin)
 
 if(EXISTS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/leviosam")
     install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/leviosam" DESTINATION bin)

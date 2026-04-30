@@ -53,7 +53,9 @@ else
 	option_rlc+="OFF"
 fi
 
-cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=Debug \
+BUILD_TYPE="${CMAKE_BUILD_TYPE_OVERRIDE:-Debug}"
+
+cmake_command="cmake .. $option_rlc -D CMAKE_BUILD_TYPE=${BUILD_TYPE} \
 -DCOLUMBA_AUTO_UPDATE_SUBMODULES=OFF \
 -DHTSLIB_ROOT=/home/students/simjonck/htslib_install \
 -DSDSL_INCLUDE_DIR=/home/students/simjonck/sdsl-lite/build/include \
@@ -84,7 +86,7 @@ if [ -n "$PHI_MOVE_FLAG" ]; then
 	dir+="_PHIMOVE"
 fi
 
-echo "Building Columba $FLAVOR in $dir..."
+echo "Building Columba $FLAVOR in $dir with CMAKE_BUILD_TYPE=${BUILD_TYPE}..."
 
 # Create the directory if it doesn't exist
 mkdir -p "$dir"

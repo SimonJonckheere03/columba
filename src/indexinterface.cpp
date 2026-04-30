@@ -19,6 +19,7 @@
  ******************************************************************************/
 #include "indexinterface.h"
 #include "definitions.h"
+#include "fmindex/mappedencodedtext.h"
 #include "indexhelpers.h"
 #include "logger.h"
 
@@ -61,9 +62,16 @@ struct LiftoverRuntimeIndex {
     std::vector<std::pair<lift::Lift, size_t>> lifts;
     std::vector<length_t> liftedStartPos;
     std::vector<std::string> liftedSeqNames;
+    std::unique_ptr<MappedEncodedText<ALPHABET>> referenceText;
 };
 
 namespace {
+
+struct ReportedAlignmentTags {
+    length_t nm = 0;
+    std::string md;
+    bool valid = false;
+};
 
 bool hasExplicitCigar(const std::string& cigar) {
     return !cigar.empty() && cigar != "*";
@@ -161,6 +169,92 @@ length_t cigarReadSpan(const std::vector<uint32_t>& ops) {
         }
     }
     return value;
+}
+
+ReportedAlignmentTags computeReportedAlignmentTags(
+    const std::string& querySequence, const std::string& referenceSequence,
+    const std::vector<uint32_t>& cigarOps) {
+    ReportedAlignmentTags result;
+
+    size_t queryPos = 0;
+    size_t refPos = 0;
+    length_t matchesSinceEvent = 0;
+
+    auto flushMatches = [&result, &matchesSinceEvent]() {
+        result.md += std::to_string(matchesSinceEvent);
+        matchesSinceEvent = 0;
+    };
+
+    for (uint32_t op : cigarOps) {
+        const uint32_t opType = bam_cigar_op(op);
+        const uint32_t opLen = bam_cigar_oplen(op);
+
+        switch (opType) {
+        case BAM_CMATCH:
+        case BAM_CEQUAL:
+        case BAM_CDIFF:
+            if (queryPos + opLen > querySequence.size() ||
+                refPos + opLen > referenceSequence.size()) {
+                return result;
+            }
+            for (uint32_t i = 0; i < opLen; ++i) {
+                const char queryBase = static_cast<char>(
+                    std::toupper(static_cast<unsigned char>(
+                        querySequence[queryPos + i])));
+                const char refBase = static_cast<char>(
+                    std::toupper(static_cast<unsigned char>(
+                        referenceSequence[refPos + i])));
+                if (queryBase == refBase) {
+                    ++matchesSinceEvent;
+                } else {
+                    flushMatches();
+                    result.md.push_back(refBase);
+                    ++result.nm;
+                }
+            }
+            queryPos += opLen;
+            refPos += opLen;
+            break;
+        case BAM_CINS:
+            if (queryPos + opLen > querySequence.size()) {
+                return result;
+            }
+            queryPos += opLen;
+            result.nm += opLen;
+            break;
+        case BAM_CDEL:
+        case BAM_CREF_SKIP:
+            if (refPos + opLen > referenceSequence.size()) {
+                return result;
+            }
+            flushMatches();
+            result.md.push_back('^');
+            result.md.append(referenceSequence.substr(refPos, opLen));
+            refPos += opLen;
+            result.nm += opLen;
+            break;
+        case BAM_CSOFT_CLIP:
+            if (queryPos + opLen > querySequence.size()) {
+                return result;
+            }
+            queryPos += opLen;
+            break;
+        case BAM_CHARD_CLIP:
+        case BAM_CPAD:
+            break;
+        default:
+            return result;
+        }
+    }
+
+    if (queryPos != querySequence.size() ||
+        refPos != referenceSequence.size()) {
+        return result;
+    }
+
+    flushMatches();
+    result.valid = true;
+    return result;
 }
 
 } // namespace
@@ -419,6 +513,21 @@ void IndexInterface::readLiftoverMetadata(const string& baseFN, bool verbose) {
                                              static_cast<ptrdiff_t>(
                                                  liftoverIndex->referenceCount) +
                                              1);
+
+    const string refTextFile = baseFN + ".ref.etxt";
+    liftoverIndex->referenceText.reset(new MappedEncodedText<ALPHABET>());
+    if (!liftoverIndex->referenceText->load(refTextFile)) {
+        throw runtime_error("Missing or unreadable reference-prefix slice file "
+                            + refTextFile +
+                            ". Rebuild the payload-space index with the "
+                            "updated columba_build_pfp.sh wrapper.");
+    }
+    if (liftoverIndex->referenceText->size() !=
+        static_cast<size_t>(liftoverIndex->liftedStartPos.back())) {
+        throw runtime_error("Reference-prefix slice file " + refTextFile +
+                            " does not match lifted reference coordinates. "
+                            "Rebuild the payload-space index.");
+    }
 }
 
 bool IndexInterface::findContainingSequence(const vector<length_t>& starts,
@@ -1068,6 +1177,8 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
                                          length_t largestStratum,
                                          const DistanceMetric& metric,
                                          const string& pattern) const {
+    t.clearReportedTags();
+
     if (liftoverIndex) {
         auto& range = t.getRange();
         const auto begin = range.getBegin();
@@ -1124,6 +1235,29 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
         }
 
         t.setOriginAssignment(originSeqID, originRange, originCigar);
+
+        if (hasExplicitCigar(t.getCigar())) {
+            try {
+                const auto liftedOps = parseCigarOps(t.getCigar());
+                const auto liftedRefSpan = cigarReferenceSpan(liftedOps);
+                if (!liftoverIndex->referenceText || liftedRefSpan == 0) {
+                    return NOT_FOUND;
+                }
+                const auto referenceSlice =
+                    liftoverIndex->referenceText->decodeSubstring(
+                        static_cast<size_t>(liftedBegin),
+                        static_cast<size_t>(liftedRefSpan));
+                const auto reportedTags = computeReportedAlignmentTags(
+                    pattern, referenceSlice, liftedOps);
+                if (!reportedTags.valid) {
+                    return NOT_FOUND;
+                }
+                t.setReportedTags(reportedTags.nm, reportedTags.md);
+            } catch (const std::exception&) {
+                return NOT_FOUND;
+            }
+        }
+
         range = liftedRange;
 
         char sign = t.isRevCompl() ? '-' : '+';
