@@ -32,6 +32,7 @@
 #include <iterator>                 // for distance
 #include <limits>                   // for numeric_limits
 #include <memory>                   // for allocator_traits<>::value_type
+#include <mutex>
 #include <parallel_hashmap/phmap.h> // phmap::parallel_flat_hash_map
 #include <cctype>
 #include <sdsl/bit_vectors.hpp>
@@ -62,6 +63,8 @@ struct LiftoverRuntimeIndex {
     std::vector<std::pair<lift::Lift, size_t>> lifts;
     std::vector<length_t> liftedStartPos;
     std::vector<std::string> liftedSeqNames;
+    std::string referenceTextFile;
+    std::once_flag referenceTextOnce;
     std::unique_ptr<MappedEncodedText<ALPHABET>> referenceText;
 };
 
@@ -255,6 +258,27 @@ ReportedAlignmentTags computeReportedAlignmentTags(
     flushMatches();
     result.valid = true;
     return result;
+}
+
+MappedEncodedText<ALPHABET>& ensureReferenceTextLoaded(
+    LiftoverRuntimeIndex& index) {
+    std::call_once(index.referenceTextOnce, [&index]() {
+        index.referenceText.reset(new MappedEncodedText<ALPHABET>());
+        if (!index.referenceText->load(index.referenceTextFile)) {
+            throw runtime_error("Missing or unreadable reference-prefix slice file "
+                                + index.referenceTextFile +
+                                ". Rebuild the payload-space index with the "
+                                "updated columba_build_pfp.sh wrapper.");
+        }
+        if (index.referenceText->size() !=
+            static_cast<size_t>(index.liftedStartPos.back())) {
+            throw runtime_error("Reference-prefix slice file " +
+                                index.referenceTextFile +
+                                " does not match lifted reference coordinates. "
+                                "Rebuild the payload-space index.");
+        }
+    });
+    return *index.referenceText;
 }
 
 } // namespace
@@ -514,20 +538,7 @@ void IndexInterface::readLiftoverMetadata(const string& baseFN, bool verbose) {
                                                  liftoverIndex->referenceCount) +
                                              1);
 
-    const string refTextFile = baseFN + ".ref.etxt";
-    liftoverIndex->referenceText.reset(new MappedEncodedText<ALPHABET>());
-    if (!liftoverIndex->referenceText->load(refTextFile)) {
-        throw runtime_error("Missing or unreadable reference-prefix slice file "
-                            + refTextFile +
-                            ". Rebuild the payload-space index with the "
-                            "updated columba_build_pfp.sh wrapper.");
-    }
-    if (liftoverIndex->referenceText->size() !=
-        static_cast<size_t>(liftoverIndex->liftedStartPos.back())) {
-        throw runtime_error("Reference-prefix slice file " + refTextFile +
-                            " does not match lifted reference coordinates. "
-                            "Rebuild the payload-space index.");
-    }
+    liftoverIndex->referenceTextFile = baseFN + ".ref.etxt";
 }
 
 bool IndexInterface::findContainingSequence(const vector<length_t>& starts,
@@ -1180,6 +1191,10 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
     t.clearReportedTags();
 
     if (liftoverIndex) {
+        const bool reportLiftedCigar =
+            liftoverReporting != LIFTOVER_REPORT_COORDS;
+        const bool reportLiftedTags =
+            liftoverReporting == LIFTOVER_REPORT_FULL;
         auto& range = t.getRange();
         const auto begin = range.getBegin();
         const auto end = range.getEnd();
@@ -1191,12 +1206,13 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
             return NOT_FOUND;
         }
 
-        const auto liftedBegin =
-            liftPosition(originSeqID, originRange.getBegin());
         const string originCigar = t.getCigar();
         length_t liftedEnd = 0;
+        length_t liftedBegin = 0;
 
-        if (hasExplicitCigar(originCigar)) {
+        liftedBegin = liftPosition(originSeqID, originRange.getBegin());
+
+        if (reportLiftedCigar && hasExplicitCigar(originCigar)) {
             try {
                 const auto originOps = parseCigarOps(originCigar);
                 const auto originRefSpan = cigarReferenceSpan(originOps);
@@ -1223,6 +1239,7 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
                 return NOT_FOUND;
             }
         } else {
+            t.setCigar("*");
             const auto liftedLast =
                 liftPosition(originSeqID, originRange.getEnd() - 1);
             liftedEnd = liftedLast + 1;
@@ -1235,27 +1252,26 @@ SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
         }
 
         t.setOriginAssignment(originSeqID, originRange, originCigar);
+        t.setEmitSamEditTags(reportLiftedTags);
 
-        if (hasExplicitCigar(t.getCigar())) {
-            try {
-                const auto liftedOps = parseCigarOps(t.getCigar());
-                const auto liftedRefSpan = cigarReferenceSpan(liftedOps);
-                if (!liftoverIndex->referenceText || liftedRefSpan == 0) {
-                    return NOT_FOUND;
-                }
-                const auto referenceSlice =
-                    liftoverIndex->referenceText->decodeSubstring(
-                        static_cast<size_t>(liftedBegin),
-                        static_cast<size_t>(liftedRefSpan));
-                const auto reportedTags = computeReportedAlignmentTags(
-                    pattern, referenceSlice, liftedOps);
-                if (!reportedTags.valid) {
-                    return NOT_FOUND;
-                }
-                t.setReportedTags(reportedTags.nm, reportedTags.md);
-            } catch (const std::exception&) {
+        if (reportLiftedTags && hasExplicitCigar(t.getCigar())) {
+            const auto liftedOps = parseCigarOps(t.getCigar());
+            const auto liftedRefSpan = cigarReferenceSpan(liftedOps);
+            if (liftedRefSpan == 0) {
                 return NOT_FOUND;
             }
+            auto& referenceText = ensureReferenceTextLoaded(*liftoverIndex);
+            const auto referenceSlice = referenceText.decodeSubstring(
+                static_cast<size_t>(liftedBegin),
+                static_cast<size_t>(liftedRefSpan));
+            const auto reportedTags =
+                computeReportedAlignmentTags(pattern, referenceSlice, liftedOps);
+            if (!reportedTags.valid) {
+                return NOT_FOUND;
+            }
+            t.setReportedTags(reportedTags.nm, reportedTags.md);
+        } else if (reportLiftedTags) {
+            t.setEmitSamEditTags(false);
         }
 
         range = liftedRange;
@@ -1835,6 +1851,42 @@ vector<TextOcc> IndexInterface::getTextOccHamming(Occurrences& occ,
     occ.eraseDoublesAndSortText();
     // Named RVO: move elision at best, move construction at worst
     return occ.getTextOccurrencesMove();
+}
+
+bool IndexInterface::appendFirstTextOccurrence(
+    const FMOcc& fmOcc, Counters& counters,
+    std::vector<TextOcc>& occurrences) const {
+
+    const SARange& saRange = fmOcc.getRanges().getRangeSA();
+    if (saRange.empty()) {
+        return false;
+    }
+
+    const length_t depth = fmOcc.getDepth();
+    const length_t shift = fmOcc.getShift();
+#ifdef RUN_LENGTH_COMPRESSION
+    const auto& ranges = fmOcc.getRanges();
+    const length_t representativePos =
+        ranges.getToehold() -
+        (ranges.getToeholdRepresentsEnd() ? (ranges.getOriginalDepth() - 1)
+                                          : 0);
+    const length_t textPos = representativePos + shift;
+#else
+    const length_t textPos = findSA(saRange.getBegin()) + shift;
+#endif
+    if (textPos >= textLength) {
+        return false;
+    }
+
+    counters.inc(Counters::TOTAL_REPORTED_POSITIONS, 1);
+
+    TextOcc tOcc(Range(textPos, textPos + depth), fmOcc.getDistance(),
+                 fmOcc.getStrand(), fmOcc.getPairStatus());
+#ifdef RUN_LENGTH_COMPRESSION
+    tOcc.setMatchedStr(fmOcc.getMatchedStr());
+#endif // RUN_LENGTH_COMPRESSION
+    occurrences.emplace_back(std::move(tOcc));
+    return true;
 }
 
 vector<TextOcc> IndexInterface::getUniqueTextOccurrences(

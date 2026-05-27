@@ -96,6 +96,7 @@ class IndexInterface {
     std::shared_ptr<LiftoverRuntimeIndex> liftoverIndex;
 
     bool noCIGAR = false; // do not calculate the CIGAR string
+    LiftoverReporting liftoverReporting = LIFTOVER_REPORT_COORDS;
 
     // in-text verification matrices
     thread_local static std::vector<BitParallelED64>
@@ -520,12 +521,17 @@ class IndexInterface {
      * @param verbose If true, the steps will be written to cout. [default =
      * true]
      * @param noCIGAR If true, the CIGAR string will not be calculated.
+     * @param liftoverReporting How much lifted alignment detail to report.
      * @param wordSize The size of the mers to be stored in the hashtable. Used
      * for quick look-ups of exact seeds. [default = 10]
      */
     IndexInterface(const std::string& baseFile, bool verbose = true,
-                   bool noCIGAR = false, length_t wordSize = 10)
-        : baseFile(baseFile), wordSize(wordSize), noCIGAR(noCIGAR) {
+                   bool noCIGAR = false,
+                   LiftoverReporting liftoverReporting =
+                       LIFTOVER_REPORT_COORDS,
+                   length_t wordSize = 10)
+        : baseFile(baseFile), wordSize(wordSize), noCIGAR(noCIGAR),
+          liftoverReporting(liftoverReporting) {
         readMetaAndCounts(baseFile, verbose);
     }
 
@@ -583,6 +589,14 @@ class IndexInterface {
      */
     bool getNoCIGAR() const {
         return noCIGAR;
+    }
+
+    LiftoverReporting getLiftoverReporting() const {
+        return liftoverReporting;
+    }
+
+    void setLiftoverReporting(LiftoverReporting mode) {
+        liftoverReporting = mode;
     }
 
     /**
@@ -915,6 +929,18 @@ class IndexInterface {
     virtual void
     getTextPositionsFromSARange(const SARangePair& ranges,
                                 std::vector<length_t>& positions) const = 0;
+
+    /**
+     * Convert only the first suffix-array entry of an FM occurrence to an
+     * in-text occurrence. Intended for heuristic candidate pruning paths that
+     * want to avoid expanding an entire SA range.
+     * @param fmOcc The FM occurrence to probe.
+     * @param counters The performance counters.
+     * @param occurrences The vector to append the resulting text occurrence to.
+     * @returns true if a text occurrence was appended, false otherwise.
+     */
+    bool appendFirstTextOccurrence(const FMOcc& fmOcc, Counters& counters,
+                                   std::vector<TextOcc>& occurrences) const;
 
     /**
      * Find unique text occurrences for the hamming distance. The in-index

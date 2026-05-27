@@ -965,6 +965,26 @@ void logAlignmentParameters(const Parameters& params,
     ss << "\tCIGAR string calculation: " << (params.noCIGAR ? "No" : "Yes")
        << "\n";
 #endif
+    if (index.hasLiftover()) {
+        string reportingMode = "coords";
+        switch (params.liftoverReporting) {
+        case LIFTOVER_REPORT_CIGAR:
+            reportingMode = "cigar";
+            break;
+        case LIFTOVER_REPORT_FULL:
+            reportingMode = "full";
+            break;
+        case LIFTOVER_REPORT_COORDS:
+        default:
+            break;
+        }
+        ss << "\tLiftover reporting: " << reportingMode << "\n";
+    }
+    ss << "\tCandidate pruning: "
+       << ((params.candidatePruning == CANDIDATE_PRUNING_REFERENCE_FIRST)
+               ? "reference-first"
+               : "exhaustive")
+       << "\n";
     ss << "\tReorder output: " << (params.reorder ? "Yes" : "No") << "\n";
     if (params.sMode == PAIRED_END) {
         ss << "\tSecond reads file: " << params.secondReadsFile << "\n";
@@ -1025,6 +1045,44 @@ std::unique_ptr<T> make_unique(Args&&... args) {
 }
 } // namespace std
 
+namespace {
+
+void normalizeLiftoverReportingForIndex(Parameters& params,
+                                        IndexInterface& index) {
+    if (!index.hasLiftover()) {
+        if (params.liftoverReportingChanged) {
+            logger.logWarning(
+                "Liftover reporting mode has no effect without liftover "
+                "metadata. Ignoring user-provided setting.");
+        }
+        params.liftoverReporting = LIFTOVER_REPORT_COORDS;
+        params.liftoverReportingChanged = false;
+        index.setLiftoverReporting(params.liftoverReporting);
+        return;
+    }
+
+    if (params.noCIGAR &&
+        params.liftoverReporting != LIFTOVER_REPORT_COORDS) {
+        logger.logWarning(
+            "Lifted CIGAR or lifted NM/MD reporting requires payload-space "
+            "CIGAR generation. Falling back to coords-only liftover "
+            "reporting.");
+        params.liftoverReporting = LIFTOVER_REPORT_COORDS;
+    }
+
+    if (params.XATag &&
+        params.liftoverReporting != LIFTOVER_REPORT_FULL) {
+        logger.logWarning(
+            "XA tag output on liftover indexes requires full lifted "
+            "reporting. Disabling XA tag output.");
+        params.XATag = false;
+    }
+
+    index.setLiftoverReporting(params.liftoverReporting);
+}
+
+} // namespace
+
 #ifndef RUN_LENGTH_COMPRESSION
 /**
  * @brief Creates an FMIndex object.
@@ -1037,7 +1095,8 @@ std::unique_ptr<FMIndex> createFMIndex(const Parameters& params) {
     try {
         return std::make_unique<FMIndex>(
             params.base, params.inTextVerificationPoint, params.noCIGAR,
-            params.sparsenessFactor, true, params.kmerSize);
+            params.liftoverReporting, params.sparsenessFactor, true,
+            params.kmerSize);
     } catch (const std::exception& e) {
         logger.logError("Problem with index loading: " + std::string(e.what()));
         return nullptr;
@@ -1055,6 +1114,7 @@ std::unique_ptr<FMIndex> createFMIndex(const Parameters& params) {
 std::unique_ptr<BMove> createBMove(const Parameters& params) {
     try {
         return std::make_unique<BMove>(params.base, true, params.noCIGAR,
+                                       params.liftoverReporting,
                                        params.kmerSize);
     } catch (const std::exception& e) {
         logger.logError("Problem with index loading: " + std::string(e.what()));
@@ -1309,6 +1369,8 @@ int main(int argc, char* argv[]) {
     if (!indexPtr) {
         return EXIT_FAILURE;
     }
+
+    normalizeLiftoverReportingForIndex(params, *indexPtr);
 
     std::unique_ptr<SearchStrategy> strategy =
         createSearchStrategy(params, *indexPtr);

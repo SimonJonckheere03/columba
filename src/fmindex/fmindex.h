@@ -393,6 +393,7 @@ class FMIndex : public IndexInterface {
      * @param inTextSwitch The switch point from in-index to in-text
      * verification.
      * @param noCIGAR If true, the CIGAR string will not be calculated.
+     * @param liftoverReporting How much lifted alignment detail to report.
      * @param sa_sparse The sparseness factor of suffix array. It is assumed
      * this is a power of two. [default = 1]
      * @param verbose If true, the steps will be written to cout. [default =
@@ -401,8 +402,10 @@ class FMIndex : public IndexInterface {
      * for quick look-ups of exact seeds. [default = 10]
      */
     FMIndex(const std::string& baseFile, length_t inTextSwitch, bool noCIGAR,
+            LiftoverReporting liftoverReporting = LIFTOVER_REPORT_COORDS,
             int sa_sparse = 1, bool verbose = true, length_t wordSize = 10)
-        : IndexInterface(baseFile, verbose, noCIGAR, wordSize),
+        : IndexInterface(baseFile, verbose, noCIGAR, liftoverReporting,
+                         wordSize),
           logSparseFactorSA(log2(sa_sparse)), sparseSA(baseFile, sa_sparse),
           inTextSwitchPoint(inTextSwitch) {
 

@@ -127,4 +127,17 @@ enum Strand { FORWARD_STRAND = 0, REVERSE_C_STRAND = 1 };
 // An enum for the status in the pair of the read
 enum PairStatus { FIRST_IN_PAIR = 0, SECOND_IN_PAIR = 1 };
 
+// An enum for how much lifted alignment detail to report in SAM output
+enum LiftoverReporting {
+    LIFTOVER_REPORT_COORDS = 0,
+    LIFTOVER_REPORT_CIGAR = 1,
+    LIFTOVER_REPORT_FULL = 2
+};
+
+// An enum for how aggressively suffix-array candidates should be pruned
+enum CandidatePruning {
+    CANDIDATE_PRUNING_EXHAUSTIVE = 0,
+    CANDIDATE_PRUNING_REFERENCE_FIRST = 1
+};
+
 #endif // DEFINITIONS_H

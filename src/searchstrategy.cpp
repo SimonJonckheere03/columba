@@ -569,6 +569,101 @@ void SearchStrategy::checkAlignments(OccVector& occVector, uint32_t& best,
     }
 }
 
+bool SearchStrategy::tryReferenceFirstExact(const string& seq,
+                                            PairStatus status, Strand strand,
+                                            length_t cutOff,
+                                            Counters& counters,
+                                            vector<TextOcc>& result) {
+    result.clear();
+    if (seq.empty()) {
+        return false;
+    }
+
+    index.setIndexInMode(strand, status);
+    index.setDirection(BACKWARD, true);
+
+    const auto ranges =
+        index.matchStringBidirectionally(Substring(seq, BACKWARD), counters);
+    if (ranges.empty()) {
+        return false;
+    }
+
+    const FMOcc exactOcc(ranges, 0, seq.size(), strand, status);
+    if (!index.appendFirstTextOccurrence(exactOcc, counters, result)) {
+        result.clear();
+        return false;
+    }
+    if (shouldGenerateCigarForReferenceFirst()) {
+        result.back().setCigar(fmt::format("{}M", seq.size()));
+    }
+
+    if (assignReferenceFirstCandidate(result.back(), counters, cutOff, seq) ==
+        FOUND) {
+        return true;
+    }
+
+    result.clear();
+    return false;
+}
+
+bool SearchStrategy::tryReferenceFirstUpTo(const string& seq,
+                                           PairStatus status, Strand strand,
+                                           length_t maxDist, length_t minDist,
+                                           Counters& counters,
+                                           vector<TextOcc>& result) {
+    result.clear();
+    if (maxDist == 0 || minDist > maxDist) {
+        return false;
+    }
+
+    Occurrences occurrences;
+    index.setIndexInMode(strand, status);
+    matchWithSearches(seq, maxDist, counters, occurrences, 0);
+
+    if (occurrences.textOccSize() > 0) {
+        occurrences.eraseDoublesAndSortText();
+    }
+    occurrences.eraseDoublesFM();
+
+    auto& textOccs = occurrences.getTextOccurrencesMutable();
+    const auto& fmOccs = occurrences.getFMOccurrences();
+
+    for (length_t dist = minDist; dist <= maxDist; ++dist) {
+        for (auto& occ : textOccs) {
+            if (occ.getDistance() != dist) {
+                continue;
+            }
+            auto candidate = std::move(occ);
+            if (assignReferenceFirstCandidate(candidate, counters, maxDist,
+                                              seq) == FOUND) {
+                result.emplace_back(std::move(candidate));
+                return true;
+            }
+        }
+
+        for (const auto& fmOcc : fmOccs) {
+            if (fmOcc.getDistance() != dist) {
+                continue;
+            }
+            vector<TextOcc> firstCandidate;
+            firstCandidate.reserve(1);
+            if (!index.appendFirstTextOccurrence(fmOcc, counters,
+                                                 firstCandidate)) {
+                continue;
+            }
+
+            auto candidate = std::move(firstCandidate.back());
+            if (assignReferenceFirstCandidate(candidate, counters, maxDist,
+                                              seq) == FOUND) {
+                result.emplace_back(std::move(candidate));
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 vector<TextOcc> SearchStrategy::combineOccVectors(OccVector& ovFW,
                                                   OccVector& ovRC,
                                                   length_t best, length_t max) {
@@ -845,10 +940,73 @@ bool SearchStrategy::findBestAlignments(const ReadBundle& bundle,
     return bestFound;
 }
 
+void SearchStrategy::matchApproxBestReferenceFirst(
+    ReadBundle& bundle, Counters& counters, const length_t minIdentity,
+    vector<TextOcc>& result) {
+
+    index.resetFullReadMatrices();
+
+    const auto cutOff = getMaxED(minIdentity, bundle.size());
+    const auto& read = bundle.getRead();
+    const auto& revC = bundle.getRevComp();
+
+    vector<TextOcc> fwCandidate;
+    vector<TextOcc> rcCandidate;
+
+    bool fwFound = tryReferenceFirstExact(read, FIRST_IN_PAIR, FORWARD_STRAND,
+                                          cutOff, counters, fwCandidate);
+    bool rcFound = tryReferenceFirstExact(revC, FIRST_IN_PAIR,
+                                          REVERSE_C_STRAND, cutOff, counters,
+                                          rcCandidate);
+
+    uint32_t prevK = 0;
+    for (uint32_t k = 1; !(fwFound || rcFound) && k <= cutOff;) {
+        const auto minDist = prevK + 1;
+        fwFound = tryReferenceFirstUpTo(read, FIRST_IN_PAIR, FORWARD_STRAND, k,
+                                        minDist, counters, fwCandidate);
+        rcFound = tryReferenceFirstUpTo(revC, FIRST_IN_PAIR,
+                                        REVERSE_C_STRAND, k, minDist, counters,
+                                        rcCandidate);
+        if (fwFound || rcFound || k == cutOff) {
+            break;
+        }
+        prevK = k;
+        const uint32_t step = (k < 5) ? 2 : 4;
+        k = std::min<uint32_t>(k + step, cutOff);
+    }
+
+    if (!fwFound && !rcFound) {
+        if (unmappedSAM) {
+            result.emplace_back(createUnmappedRecordSE(bundle));
+        }
+        return;
+    }
+
+    if (fwFound && rcFound) {
+        if (rcCandidate.front().getDistance() < fwCandidate.front().getDistance()) {
+            result.emplace_back(std::move(rcCandidate.front()));
+        } else {
+            result.emplace_back(std::move(fwCandidate.front()));
+        }
+    } else if (fwFound) {
+        result.emplace_back(std::move(fwCandidate.front()));
+    } else {
+        result.emplace_back(std::move(rcCandidate.front()));
+    }
+
+    (this->*generateOutputSEPtr)(bundle, 1, result.front().getDistance(),
+                                 result, counters);
+}
+
 void SearchStrategy::matchApproxBestPlusX(ReadBundle& bundle, length_t x,
                                           Counters& counters,
                                           const length_t minIdentity,
                                           vector<TextOcc>& result) {
+
+    if (candidatePruning == CANDIDATE_PRUNING_REFERENCE_FIRST) {
+        matchApproxBestReferenceFirst(bundle, counters, minIdentity, result);
+        return;
+    }
 
     // reset the in-text verification matrices from previous read
     index.resetFullReadMatrices();

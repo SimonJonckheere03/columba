@@ -166,6 +166,64 @@ class ActivateCigarOption : public ParameterOption {
 };
 #endif
 
+class LiftoverReportingOption : public ParameterOption {
+  public:
+    LiftoverReportingOption()
+        : ParameterOption("LR", "liftover-reporting", true, STRING, OUTPUT) {
+    }
+
+    void process(const std::string& arg, Parameters& params) const override {
+        if (arg == "coords") {
+            params.liftoverReporting = LIFTOVER_REPORT_COORDS;
+        } else if (arg == "cigar") {
+            params.liftoverReporting = LIFTOVER_REPORT_CIGAR;
+        } else if (arg == "full") {
+            params.liftoverReporting = LIFTOVER_REPORT_FULL;
+        } else {
+            logger.logWarning(
+                arg +
+                " is not a liftover reporting mode\nOptions are: coords, "
+                "cigar, full" +
+                ignoreMessage());
+            return;
+        }
+        params.liftoverReportingChanged = true;
+    }
+
+    std::string getDescription() const override {
+        return "How much lifted alignment detail to report for liftover "
+               "indexes. Options are: coords, cigar, full. Default is "
+               "coords.";
+    }
+};
+
+class CandidatePruningOption : public ParameterOption {
+  public:
+    CandidatePruningOption()
+        : ParameterOption("CP", "candidate-pruning", true, STRING, OUTPUT) {
+    }
+
+    void process(const std::string& arg, Parameters& params) const override {
+        if (arg == "exhaustive") {
+            params.candidatePruning = CANDIDATE_PRUNING_EXHAUSTIVE;
+        } else if (arg == "reference-first") {
+            params.candidatePruning = CANDIDATE_PRUNING_REFERENCE_FIRST;
+        } else {
+            logger.logWarning(
+                arg +
+                " is not a candidate pruning mode\nOptions are: exhaustive, "
+                "reference-first" +
+                ignoreMessage());
+        }
+    }
+
+    std::string getDescription() const override {
+        return "How aggressively suffix-array candidates are pruned. "
+               "Options are: exhaustive, reference-first. Default is "
+               "exhaustive.";
+    }
+};
+
 /**
  * Option for the command line arguments considering the search scheme to be
  * used.
@@ -913,6 +971,8 @@ const std::vector<std::shared_ptr<Option>> ParametersInterface::options = {
     std::make_shared<NoUnmappedOption>(),
 
     std::make_shared<XATagOption>(),
+    std::make_shared<LiftoverReportingOption>(),
+    std::make_shared<CandidatePruningOption>(),
     std::make_shared<SearchSchemeOption>(),
     std::make_shared<CustomOption>(),
     std::make_shared<NoDynamicSelectionWithCustomOption>(),
@@ -1142,6 +1202,36 @@ Parameters Parameters::processOptionalArguments(int argc, char** argv) {
                           StrataAfterBestOption().ignoreMessage());
     }
 
+    if (!params.outputIsSAM && params.liftoverReportingChanged) {
+        logger.logWarning(
+            "Liftover reporting mode is only supported for SAM output. " +
+            LiftoverReportingOption().ignoreMessage());
+        params.liftoverReporting = LIFTOVER_REPORT_COORDS;
+        params.liftoverReportingChanged = false;
+    }
+
+    if (params.candidatePruning == CANDIDATE_PRUNING_REFERENCE_FIRST) {
+        if (!params.secondReadsFile.empty()) {
+            throw std::runtime_error(
+                "Candidate pruning mode 'reference-first' is only supported "
+                "for single-end alignment.");
+        }
+        if (params.mMode != BEST) {
+            throw std::runtime_error(
+                "Candidate pruning mode 'reference-first' is only supported "
+                "in BEST mode.");
+        }
+        if (params.strataAfterBest != 0) {
+            throw std::runtime_error(
+                "Candidate pruning mode 'reference-first' requires -x 0.");
+        }
+        if (params.XATag) {
+            throw std::runtime_error(
+                "Candidate pruning mode 'reference-first' does not support "
+                "XA-tag output.");
+        }
+    }
+
     if (params.custom.empty() && !params.customDynamicSelection) {
         logger.logWarning("Turning off dynamic selection only has effect when "
                           "a custom search scheme is used. " +
@@ -1237,6 +1327,14 @@ Parameters Parameters::processOptionalArguments(int argc, char** argv) {
                     CigarOption().ignoreMessage());
                 params.noCIGAR = !params.noCIGAR; // toggle CIGAR
                 params.cigarBehaviourChanged = false;
+            }
+            if (params.liftoverReportingChanged) {
+                logger.logWarning(
+                    "Liftover reporting mode is not supported for RHS "
+                    "output. " +
+                    LiftoverReportingOption().ignoreMessage());
+                params.liftoverReporting = LIFTOVER_REPORT_COORDS;
+                params.liftoverReportingChanged = false;
             }
         }
     } else {
@@ -1382,6 +1480,7 @@ Parameters::createStrategy(IndexInterface& index) const {
     strategy->setXATag(XATag);
     strategy->setSamOutput(outputIsSAM);
     strategy->setStrataAfterBest(strataAfterBest);
+    strategy->setCandidatePruning(candidatePruning);
 
     return strategy;
 }

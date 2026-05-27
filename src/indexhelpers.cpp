@@ -67,15 +67,18 @@ void TextOcc::generateSAMSingleEnd(const string& seqID, const string& printSeq,
     uint16_t flags = getFlagsSE(primaryAlignment);
     int16_t mapQ = getMapQ(nHits, minScore);
     length_t pos = range.getBegin() + 1; // SAM is 1-based
-    const length_t samDistance = getSAMDistance();
-    const std::string mdTag = hasLiftedReportedTags()
-                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
-                                  : "";
+    const std::string samEditTags =
+        shouldEmitSamEditTags()
+            ? fmt::format("\tNM:i:{}{}", getSAMDistance(),
+                          hasLiftedReportedTags()
+                              ? fmt::format("\tMD:Z:{}", getReportedMD())
+                              : "")
+            : "";
 
     // Format the output line
     outputLine =
-        fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}\tNM:i:{}"
-                    "{}\tPG:Z:Columba\n",
+        fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}{}"
+                    "\tPG:Z:Columba\n",
                     seqID,                        // read name
                     flags,                        // sam flags
                     seqNames[assignedSequenceID], // reference sequence name
@@ -85,8 +88,7 @@ void TextOcc::generateSAMSingleEnd(const string& seqID, const string& printSeq,
                     printSeq,    // sequence or *
                     printQual,   // quality or *
                     distance,    // AS:i: distance
-                    samDistance, // NM:i: distance
-                    mdTag
+                    samEditTags
         );
 }
 
@@ -157,13 +159,17 @@ void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
     const auto& sign =
         (mateMapped && range.getBegin() > mateOcc.range.getBegin()) ? "-" : "";
     const auto insertSize = (mateMapped) ? fragSize : 0;
-    const std::string mdTag = hasLiftedReportedTags()
-                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
-                                  : "";
+    const std::string samEditTags =
+        shouldEmitSamEditTags()
+            ? fmt::format("\tNM:i:{}{}", getSAMDistance(),
+                          hasLiftedReportedTags()
+                              ? fmt::format("\tMD:Z:{}", getReportedMD())
+                              : "")
+            : "";
 
     outputLine = fmt::format(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}\tAS:i:{}\tNM:i:"
-        "{}{}\tPG:Z:Columba\n",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}\tAS:i:{}{}"
+        "\tPG:Z:Columba\n",
         bundle.getSeqID(), // read name
         flags,             // SAM flags
         assignedSeq,       // reference sequence name
@@ -177,8 +183,7 @@ void TextOcc::generateSAMPairedEnd(ReadBundle& bundle, uint32_t nPairs,
         printSeq,                                // read sequence
         printQual,                               // read quality
         distance,                                // alignment score of this read
-        getSAMDistance(),                        // distance to reference of this read
-        mdTag
+        samEditTags
     );
     appendOriginAlternates();
 }
@@ -265,12 +270,16 @@ void TextOcc::generateSAMUnpaired(ReadBundle& bundle, uint32_t nHits,
     outputLine.reserve(bundle.getSeqID().length() + bundle.getRead().length() +
                        bundle.getQual().length() +
                        150); // 150 is a rough estimate for the fixed parts
-    const std::string mdTag = hasLiftedReportedTags()
-                                  ? fmt::format("\tMD:Z:{}", getReportedMD())
-                                  : "";
+    const std::string samEditTags =
+        shouldEmitSamEditTags()
+            ? fmt::format("\tNM:i:{}{}", getSAMDistance(),
+                          hasLiftedReportedTags()
+                              ? fmt::format("\tMD:Z:{}", getReportedMD())
+                              : "")
+            : "";
     outputLine =
-        fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}\tNM:i:{}"
-                    "{}\tPG:Z:Columba\n",
+        fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t*\t0\t0\t{}\t{}\tAS:i:{}{}"
+                    "\tPG:Z:Columba\n",
                     bundle.getSeqID(),            // read name
                     flags,                        // flags
                     seqNames[assignedSequenceID], // reference sequence name
@@ -280,8 +289,7 @@ void TextOcc::generateSAMUnpaired(ReadBundle& bundle, uint32_t nHits,
                     printSeq,                     // read sequence
                     printQual,                    // read quality
                     distance,                     // alignment score
-                    getSAMDistance(),             // distance to reference
-                    mdTag
+                    samEditTags
         );
     appendOriginAlternates();
 }

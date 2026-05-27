@@ -51,6 +51,11 @@ struct Parameters : public ParametersInterface {
     bool noUnmappedRecord = false; // Do not output the unmapped reads
     bool XATag = false;            // Add secondary alignments via XA tag
     bool reorder = false;          // Ensure order is same as original file
+    LiftoverReporting liftoverReporting =
+        LIFTOVER_REPORT_COORDS; // Default to coordinates-only lifted output
+    bool liftoverReportingChanged = false;
+    CandidatePruning candidatePruning =
+        CANDIDATE_PRUNING_EXHAUSTIVE; // Default to exhaustive candidate checks
 
     bool doTrim = false;    // Trim the reads before aligning
     length_t trimStart = 0; // The start position of the bases to keep

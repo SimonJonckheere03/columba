@@ -293,6 +293,7 @@ class TextOcc {
     length_t reportedNM = 0;
     std::string reportedMD = "";
     bool hasReportedTags = false;
+    bool emitSamEditTags = true;
 
     std::string stringCIGAR = ""; // Start with the empty string
     std::string originCIGAR = "";
@@ -483,6 +484,7 @@ class TextOcc {
           reportedNM(other.reportedNM),
           reportedMD(std::move(other.reportedMD)),
           hasReportedTags(other.hasReportedTags),
+          emitSamEditTags(other.emitSamEditTags),
           stringCIGAR(std::move(other.stringCIGAR)),
           originCIGAR(std::move(other.originCIGAR)),
           assignedSequenceID(other.assignedSequenceID),
@@ -511,6 +513,7 @@ class TextOcc {
         copy.reportedNM = reportedNM;
         copy.reportedMD = reportedMD;
         copy.hasReportedTags = hasReportedTags;
+        copy.emitSamEditTags = emitSamEditTags;
         copy.originCIGAR = originCIGAR;
         copy.assignedSequenceID = assignedSequenceID;
         copy.originSequenceID = originSequenceID;
@@ -539,6 +542,7 @@ class TextOcc {
             reportedNM = other.reportedNM;
             reportedMD = std::move(other.reportedMD);
             hasReportedTags = other.hasReportedTags;
+            emitSamEditTags = other.emitSamEditTags;
             stringCIGAR = std::move(other.stringCIGAR);
             originCIGAR = std::move(other.originCIGAR);
             assignedSequenceID = other.assignedSequenceID;
@@ -792,12 +796,14 @@ class TextOcc {
         reportedNM = nm;
         reportedMD = md;
         hasReportedTags = true;
+        emitSamEditTags = true;
     }
 
     void clearReportedTags() {
         reportedNM = 0;
         reportedMD.clear();
         hasReportedTags = false;
+        emitSamEditTags = true;
     }
 
     bool hasLiftedReportedTags() const {
@@ -814,6 +820,14 @@ class TextOcc {
 
     length_t getSAMDistance() const {
         return hasReportedTags ? reportedNM : distance;
+    }
+
+    void setEmitSamEditTags(bool emit) {
+        emitSamEditTags = emit;
+    }
+
+    bool shouldEmitSamEditTags() const {
+        return emitSamEditTags;
     }
 
     void setPairStatus(PairStatus pairStatus) {

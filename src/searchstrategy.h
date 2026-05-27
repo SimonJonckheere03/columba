@@ -194,6 +194,7 @@ class SearchStrategy {
                                   // the fragment size and orientation
     bool unmappedSAM = true; // whether to generate SAM lines for unmapped reads
     bool xaTag = false; // whether to use the XA tag for secondary alignments
+    CandidatePruning candidatePruning = CANDIDATE_PRUNING_EXHAUSTIVE;
     bool discordantAllowed = false; // whether discordant alignments are allowed
     length_t nDiscordantPairs = 100000; // number of discordant pairs allowed
 
@@ -653,6 +654,35 @@ class SearchStrategy {
     void checkAlignments(OccVector& occVector, uint32_t& best, uint32_t l,
                          Counters& counters, uint32_t cutOff,
                          const std::string& seq) const;
+
+    bool shouldGenerateCigarForReferenceFirst() const {
+        return !index.getNoCIGAR() &&
+               (!index.hasLiftover() ||
+                index.getLiftoverReporting() != LIFTOVER_REPORT_COORDS);
+    }
+
+    SeqNameFound assignReferenceFirstCandidate(TextOcc& occ, Counters& counters,
+                                               length_t maxED,
+                                               const std::string& seq) const {
+        if (shouldGenerateCigarForReferenceFirst()) {
+            return assignSequenceAndCIGAR(occ, counters, maxED, seq);
+        }
+        return assignSequence(occ, counters, maxED, seq);
+    }
+
+    bool tryReferenceFirstExact(const std::string& seq, PairStatus status,
+                                Strand strand, length_t cutOff,
+                                Counters& counters,
+                                std::vector<TextOcc>& result);
+
+    bool tryReferenceFirstUpTo(const std::string& seq, PairStatus status,
+                               Strand strand, length_t maxDist,
+                               length_t minDist, Counters& counters,
+                               std::vector<TextOcc>& result);
+
+    void matchApproxBestReferenceFirst(ReadBundle& bundle, Counters& counters,
+                                       const length_t minIdentity,
+                                       std::vector<TextOcc>& result);
 
     bool findBestAlignments(const ReadBundle& bundle, OccVector& fw,
                             OccVector& rc, Counters& counters, uint32_t x,
@@ -1918,6 +1948,10 @@ class SearchStrategy {
      */
     void setStrataAfterBest(uint32_t strataAfterBest) {
         this->x = strataAfterBest;
+    }
+
+    void setCandidatePruning(CandidatePruning candidatePruning) {
+        this->candidatePruning = candidatePruning;
     }
 
     /**

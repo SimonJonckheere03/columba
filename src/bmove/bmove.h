@@ -333,12 +333,15 @@ class BMove : public IndexInterface {
      * @param verbose If true, the steps will be written to cout. [default =
      * true]
      * @param noCIGAR If true, the CIGAR string will not be calculated.
+     * @param liftoverReporting How much lifted alignment detail to report.
      * @param wordSize The size of the mers to be stored in the hashtable.
      * Used for quick look-ups of exact seeds. [default = 10]
      */
     BMove(const std::string& baseFile, bool verbose = true, bool noCIGAR = true,
+          LiftoverReporting liftoverReporting = LIFTOVER_REPORT_COORDS,
           length_t wordSize = 10)
-        : IndexInterface(baseFile, verbose, noCIGAR, wordSize) {
+        : IndexInterface(baseFile, verbose, noCIGAR, liftoverReporting,
+                         wordSize) {
 
         // read in files
         fromFiles(baseFile, verbose);
